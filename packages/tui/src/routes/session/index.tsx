@@ -298,9 +298,7 @@ export function Session() {
         // workspace may not exist anymore which is why this is not
         // fatal. If it doesn't we still want to show the session
         // (which will be non-interactive)
-        try {
-          await sync.bootstrap({ fatal: false })
-        } catch {}
+        await sync.bootstrap()
       }
       editor.reconnect(result.data.directory)
       await sync.session.sync(sessionID)

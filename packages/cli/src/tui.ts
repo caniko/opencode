@@ -2,17 +2,26 @@ import { run } from "@opencode-ai/tui"
 import { TuiConfig } from "@opencode-ai/tui/config"
 import { Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
+import { loadBuiltinPlugins } from "@opencode-ai/tui/builtins"
 
 export function runTui(transport: { url: string; headers: RequestInit["headers"] }) {
   const config = TuiConfig.resolve({}, { terminalSuspend: false })
+  let disposeSlots: (() => void) | undefined
   return run({
     ...transport,
     args: {},
     config,
     fetch: gracefulFetch,
     pluginHost: {
-      async start() {},
-      async dispose() {},
+      async start(input) {
+        disposeSlots = await loadBuiltinPlugins(input.api, input.runtime, {
+          experimentalEventSystem: false,
+          experimentalSessionSwitcher: false,
+        })
+      },
+      async dispose() {
+        disposeSlots?.()
+      },
     },
   }).pipe(Effect.provide(Global.defaultLayer))
 }

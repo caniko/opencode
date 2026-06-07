@@ -1,6 +1,6 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
-import { useSyncV2 } from "../../context/sync-v2"
+import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
 import { Spinner } from "../../component/spinner"
 import { useTheme } from "../../context/theme"
@@ -29,7 +29,7 @@ import type {
   ToolFileContent,
   ToolTextContent,
 } from "@opencode-ai/sdk/v2"
-import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 
@@ -44,20 +44,16 @@ function currentSessionID(api: TuiPluginApi) {
 }
 
 function View(props: { api: TuiPluginApi; sessionID: string }) {
-  const sync = useSyncV2()
+  const data = useData()
   const dimensions = useTerminalDimensions()
   const { theme, syntax, subtleSyntax } = useTheme()
-  const messages = createMemo(() => sync.data.messages[props.sessionID] ?? [])
+  const messages = createMemo(() => data.session.message.list(props.sessionID) ?? [])
   const renderedMessages = createMemo(() => messages().toReversed())
   const lastAssistant = createMemo(() => renderedMessages().findLast((message) => message.type === "assistant"))
   const lastUserCreated = (index: number) =>
     renderedMessages()
       .slice(0, index)
       .findLast((message) => message.type === "user")?.time.created
-
-  createEffect(() => {
-    void sync.session.message.sync(props.sessionID)
-  })
 
   useBindings(() => ({
     bindings: [
@@ -85,7 +81,7 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
           >
             <box height={1} />
             <Show when={messages().length === 0}>
-              <MissingData label="Messages" detail="No v2 messages loaded from useSyncV2 yet." />
+              <MissingData label="Messages" detail="No messages loaded yet." />
             </Show>
             <For each={renderedMessages()}>
               {(message, index) => (

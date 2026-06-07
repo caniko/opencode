@@ -274,6 +274,8 @@ import type {
   V2FsReadResponses,
   V2HealthGetErrors,
   V2HealthGetResponses,
+  V2LocationGetErrors,
+  V2LocationGetResponses,
   V2ModelListErrors,
   V2ModelListResponses,
   V2PermissionRequestListErrors,
@@ -292,6 +294,8 @@ import type {
   V2SessionCompactResponses,
   V2SessionContextErrors,
   V2SessionContextResponses,
+  V2SessionGetErrors,
+  V2SessionGetResponses,
   V2SessionListErrors,
   V2SessionListResponses,
   V2SessionMessagesErrors,
@@ -302,6 +306,8 @@ import type {
   V2SessionPermissionReplyResponses,
   V2SessionPromptErrors,
   V2SessionPromptResponses,
+  V2SessionQuestionListErrors,
+  V2SessionQuestionListResponses,
   V2SessionQuestionRejectErrors,
   V2SessionQuestionRejectResponses,
   V2SessionQuestionReplyErrors,
@@ -5043,6 +5049,30 @@ export class Health extends HeyApiClient {
   }
 }
 
+export class Location extends HeyApiClient {
+  /**
+   * Get location
+   *
+   * Resolve the requested location or the server default location.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).get<V2LocationGetResponses, V2LocationGetErrors, ThrowOnError>({
+      url: "/api/location",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Agent extends HeyApiClient {
   /**
    * List agents
@@ -5136,6 +5166,29 @@ export class Permission2 extends HeyApiClient {
 }
 
 export class Question2 extends HeyApiClient {
+  /**
+   * List session question requests
+   *
+   * Retrieve pending question requests owned by a session.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<
+      V2SessionQuestionListResponses,
+      V2SessionQuestionListErrors,
+      ThrowOnError
+    >({
+      url: "/api/session/{sessionID}/question",
+      ...options,
+      ...params,
+    })
+  }
+
   /**
    * Reply to pending question request
    *
@@ -5250,6 +5303,25 @@ export class Session3 extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<V2SessionListResponses, V2SessionListErrors, ThrowOnError>({
       url: "/api/session",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session
+   *
+   * Retrieve a session by ID.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<V2SessionGetResponses, V2SessionGetErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}",
       ...options,
       ...params,
     })
@@ -5750,6 +5822,11 @@ export class V2 extends HeyApiClient {
   private _health?: Health
   get health(): Health {
     return (this._health ??= new Health({ client: this.client }))
+  }
+
+  private _location?: Location
+  get location(): Location {
+    return (this._location ??= new Location({ client: this.client }))
   }
 
   private _agent?: Agent

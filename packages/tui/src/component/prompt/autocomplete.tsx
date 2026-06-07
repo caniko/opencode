@@ -9,6 +9,7 @@ import { useEditorContext } from "../../context/editor"
 import { useProject } from "../../context/project"
 import { useSDK } from "../../context/sdk"
 import { useSync } from "../../context/sync"
+import { useData } from "../../context/data"
 import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiPaths } from "../../context/runtime"
 import { useTuiConfig } from "../../config"
@@ -85,6 +86,7 @@ export function Autocomplete(props: {
   const editor = useEditorContext()
   const sdk = useSDK()
   const sync = useSync()
+  const data = useData()
   const project = useProject()
   const slashes = useCommandSlashes()
   const modeStack = useOpencodeModeStack()
@@ -413,16 +415,15 @@ export function Autocomplete(props: {
   })
 
   const agents = createMemo(() => {
-    const agents = sync.data.agent
-    return agents
+    return (data.location.agent.list() ?? [])
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
       .map(
         (agent): AutocompleteOption => ({
-          display: "@" + agent.name,
+          display: "@" + agent.id,
           onSelect: () => {
-            insertPart(agent.name, {
+            insertPart(agent.id, {
               type: "agent",
-              name: agent.name,
+              name: agent.id,
               source: {
                 start: 0,
                 end: 0,

@@ -648,6 +648,7 @@ const scenarios: Scenario[] = [
     object(body)
     check(body.healthy === true, "v2 server should report healthy")
   }),
+  http.protected.get("/api/location", "v2.location.get").json(200, object),
   http.protected.get("/api/agent", "v2.agent.list").json(200, locationData(array)),
   http.protected.get("/api/model", "v2.model.list").json(200, locationData(array)),
   http.protected.get("/api/provider", "v2.provider.list").json(200, locationData(array)),
@@ -692,6 +693,14 @@ const scenarios: Scenario[] = [
     .seeded((ctx) => ctx.session({ title: "Permission list owner" }))
     .at((ctx) => ({
       path: route("/api/session/{sessionID}/permission", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, data(array)),
+  http.protected
+    .get("/api/session/{sessionID}/question", "v2.session.question.list")
+    .seeded((ctx) => ctx.session({ title: "Question list owner" }))
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/question", { sessionID: ctx.state.id }),
       headers: ctx.headers(),
     }))
     .json(200, data(array)),
@@ -804,6 +813,14 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(400, undefined, "none"),
+  http.protected
+    .get("/api/session/{sessionID}", "v2.session.get")
+    .seeded((ctx) => ctx.session({ title: "Session get" }))
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, data(object)),
   http.protected
     .get("/api/session/{sessionID}/context", "v2.session.context")
     .at((ctx) => ({

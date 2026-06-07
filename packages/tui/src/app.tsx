@@ -20,7 +20,6 @@ import {
   onCleanup,
   batch,
   Show,
-  on,
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
@@ -33,7 +32,7 @@ import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
-import { SyncProviderV2 } from "./context/sync-v2"
+import { DataProvider } from "./context/data"
 import { LocalProvider, useLocal } from "./context/local"
 import { DialogModel } from "./component/dialog-model"
 import { useConnected } from "./component/use-connected"
@@ -278,7 +277,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                       >
                                         <ProjectProvider>
                                           <SyncProvider>
-                                            <SyncProviderV2>
+                                            <DataProvider>
                                               <ThemeProvider mode={mode}>
                                                 <LocalProvider>
                                                   <PromptStashProvider>
@@ -299,7 +298,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                   </PromptStashProvider>
                                                 </LocalProvider>
                                               </ThemeProvider>
-                                            </SyncProviderV2>
+                                            </DataProvider>
                                           </SyncProvider>
                                         </ProjectProvider>
                                       </SDKProvider>
@@ -502,17 +501,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       }
     })
   })
-
-  createEffect(
-    on(
-      () => sync.status === "complete" && sync.data.provider.length === 0,
-      (isEmpty, wasEmpty) => {
-        // only trigger when we transition into an empty-provider state
-        if (!isEmpty || wasEmpty) return
-        dialog.replace(() => <DialogProviderList />)
-      },
-    ),
-  )
 
   const connected = useConnected()
   const currentWorktreeWorkspace = createMemo(() => {

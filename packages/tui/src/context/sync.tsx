@@ -24,15 +24,12 @@ import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "./project"
 import { useEvent } from "./event"
 import { useSDK } from "./sdk"
-import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
-import { useRenderer } from "@opentui/solid"
 import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
 import path from "path"
 import { aggregateFailures } from "./aggregate-failures"
 import { useKV } from "./kv"
-import { destroyRenderer } from "../util/renderer"
 
 const emptyConsoleState: ConsoleState = {
   consoleManagedProviders: [],
@@ -59,7 +56,6 @@ export const {
 } = createSimpleContext({
   name: "Sync",
   init: () => {
-    const startup = useTuiStartup()
     const kv = useKV()
     const [store, setStore] = createStore<{
       status: "loading" | "partial" | "complete"
@@ -424,11 +420,9 @@ export const {
       }
     })
 
-    const renderer = useRenderer()
     const args = useArgs()
 
-    async function bootstrap(input: { fatal?: boolean } = {}) {
-      const fatal = input.fatal ?? true
+    async function bootstrap() {
       const workspace = project.workspace.current()
       const projectPromise = project.sync()
       const sessionListPromise = projectPromise.then(() => listSessions())
@@ -522,11 +516,7 @@ export const {
             name: e instanceof Error ? e.name : undefined,
             stack: e instanceof Error ? e.stack : undefined,
           })
-          if (fatal) {
-            destroyRenderer(renderer)
-          } else {
-            throw e
-          }
+          setStore("status", "partial")
         })
     }
 
@@ -541,8 +531,7 @@ export const {
         return store.status
       },
       get ready() {
-        if (startup.skipInitialLoading) return true
-        return store.status !== "loading"
+        return true
       },
       get path() {
         return project.instance.path()
