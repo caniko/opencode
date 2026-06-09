@@ -1,4 +1,5 @@
 import { Auth } from "../../auth"
+import { AuthWellKnown } from "@opencode-ai/core/auth-well-known"
 import { cmd } from "./cmd"
 import { CliError, effectCmd, fail } from "../effect-cmd"
 import { UI } from "../ui"
