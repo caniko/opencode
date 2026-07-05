@@ -33,6 +33,79 @@ import { ProviderError } from "./error"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
 
+// GMI SSE interceptor: sanitizes anomalous chunks from GLM API stream
+async function gmiInterceptorFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(url, init)
+
+  if (
+    !response.body ||
+    !response.headers.get("content-type")?.includes("text/event-stream")
+  ) {
+    return response
+  }
+
+  const reader = response.body.getReader()
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  const stream = new ReadableStream({
+    async pull(ctrl) {
+      while (true) {
+        let result: ReadableStreamReadResult<Uint8Array>
+        try {
+          result = await reader.read()
+        } catch (err) {
+          ctrl.error(err)
+          return
+        }
+        if (result.done) {
+          if (buffer.trim()) {
+            const lines = buffer.trim().split("\n")
+            for (const line of lines) {
+              if (line.startsWith("data: ") && line.slice(6) === "[DONE]") {
+                ctrl.enqueue(encoder.encode("data: [DONE]\n\n"))
+              }
+            }
+          }
+          ctrl.close()
+          return
+        }
+        buffer += decoder.decode(result.value, { stream: true })
+        const parts = buffer.split("\n\n")
+        buffer = parts.pop() || ""
+
+        for (const part of parts) {
+          if (!part.trim()) continue
+          let dataLine = ""
+          for (const line of part.trim().split("\n")) {
+            if (line.startsWith("data: ")) { dataLine = line; break }
+          }
+          if (!dataLine) continue
+          const data = dataLine.slice(6)
+          if (data === "[DONE]") {
+            ctrl.enqueue(encoder.encode("data: [DONE]\n\n"))
+            continue
+          }
+          let chunk: Record<string, unknown>
+          try { chunk = JSON.parse(data) } catch { continue }
+          const choices = chunk["choices"]
+          if (!Array.isArray(choices) || choices.length === 0) continue
+          const first = choices[0]
+          if (first === null || typeof first !== "object") continue
+          if (!("delta" in (first as Record<string, unknown>)) || (first as Record<string, unknown>)["delta"] === null) {
+            (first as Record<string, unknown>)["delta"] = {}
+          }
+          ctrl.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+        }
+      }
+    },
+    cancel() { reader.cancel() },
+  })
+
+  return new Response(stream, { headers: response.headers, status: response.status })
+}
+
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
@@ -932,6 +1005,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         },
       }
     }),
+    gmi: () => Effect.succeed({ autoload: false }),
   }
 }
 
@@ -1624,6 +1698,10 @@ export const layer = Layer.effect(
 
         if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
           delete options.fetch
+        }
+
+        if (model.providerID === "gmi" && !options["fetch"]) {
+          options["fetch"] = gmiInterceptorFetch
         }
 
         if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {
