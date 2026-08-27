@@ -122,6 +122,11 @@ const fill = (mode: "lines" | "bytes", n: number) => {
   if (PS.has(sh())) return `& ${text}`
   return text
 }
+const script = (code: string) => {
+  const text = `${bin} -e ${evalarg(code)}`
+  if (PS.has(sh())) return `& ${text}`
+  return text
+}
 const glob = (p: string) =>
   process.platform === "win32" ? Filesystem.normalizePathPattern(p) : p.replaceAll("\\", "/")
 
@@ -1129,6 +1134,112 @@ describe("tool.shell abort", () => {
       }),
     ),
   )
+
+  it.live("coalesces streaming metadata and flushes the final preview", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: script(
+              `for(let i=0;i<1000;i++)process.stdout.write(String(i)+String.fromCharCode(10));for(let i=0;i<60;i++){process.stdout.write(String(i)+String.fromCharCode(10));await Bun.sleep(10)}`,
+            ),
+          },
+          {
+            ...ctx,
+            metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+          },
+        )
+        expect(updates.length).toBeLessThanOrEqual(6)
+        expect(new Set(updates).size).toBe(updates.length)
+        expect(updates.at(-1)).toBe(result.metadata.output)
+      }),
+    ),
+  )
+
+  it.live("flushes output produced inside the throttle window on non-zero exit", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: script(
+              `process.stdout.write(String.fromCharCode(97));await Bun.sleep(50);process.stdout.write(String.fromCharCode(98));process.exit(7)`,
+            ),
+          },
+          {
+            ...ctx,
+            metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+          },
+        )
+        expect(result.metadata.exit).toBe(7)
+        expect(updates.at(-1)).toBe("ab")
+      }),
+    ),
+  )
+
+  it.live(
+    "flushes output produced inside the throttle window on timeout",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const updates: string[] = []
+          const result = yield* run(
+            {
+              command: script(
+                `process.stdout.write(String.fromCharCode(97));await Bun.sleep(50);process.stdout.write(String.fromCharCode(98));await Bun.sleep(60000)`,
+              ),
+              timeout: 1000,
+            },
+            {
+              ...ctx,
+              metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+            },
+          )
+          expect(result.output).toContain("shell tool terminated command")
+          expect(updates.at(-1)).toBe("ab")
+        }),
+      ),
+    15_000,
+  )
+
+  it.live(
+    "flushes output produced inside the throttle window on abort",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const controller = new AbortController()
+          const updates: string[] = []
+          let armed = false
+          const result = yield* run(
+            {
+              command: script(
+                `process.stdout.write(String.fromCharCode(97));await Bun.sleep(50);process.stdout.write(String.fromCharCode(98));await Bun.sleep(60000)`,
+              ),
+            },
+            {
+              ...ctx,
+              abort: controller.signal,
+              metadata: (input) =>
+                Effect.sync(() => {
+                  const output = input.metadata?.output ?? ""
+                  updates.push(output)
+                  if (output !== "a" || armed) return
+                  armed = true
+                  setTimeout(() => controller.abort(), 100)
+                }),
+            },
+          )
+          expect(result.output).toContain("User aborted the command")
+          expect(updates.at(-1)).toBe("ab")
+        }),
+      ),
+    15_000,
+  )
 })
 
 describe("tool.shell truncation", () => {
@@ -1193,6 +1304,28 @@ describe("tool.shell truncation", () => {
         expect(lines.length).toBe(lineCount)
         expect(lines[0]).toBe("1")
         expect(lines[lineCount - 1]).toBe(String(lineCount))
+      }),
+    ),
+  )
+
+  it.live("flushes the final truncated preview without duplicates", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: fill("bytes", Truncate.MAX_BYTES + 10000),
+          },
+          {
+            ...ctx,
+            metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+          },
+        )
+        mustTruncate(result)
+        expect(result.metadata.outputPath).toBeTruthy()
+        expect(new Set(updates).size).toBe(updates.length)
+        expect(updates.at(-1)).toBe(result.metadata.output)
       }),
     ),
   )

@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Clock, Effect, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -446,6 +446,17 @@ export const ShellTool = Tool.define(
       let cut = false
       let expired = false
       let aborted = false
+      let published = ""
+      let publishedAt = Number.NEGATIVE_INFINITY
+
+      const publish = Effect.fnUntraced(function* (force = false) {
+        if (last === published) return
+        const now = yield* Clock.currentTimeMillis
+        if (!force && now - publishedAt < 250) return
+        yield* ctx.metadata({ metadata: { output: last } })
+        published = last
+        publishedAt = now
+      })
 
       const closeSink = Effect.fnUntraced(function* () {
         const stream = sink
@@ -511,22 +522,12 @@ export const ShellTool = Tool.define(
                         full = ""
                       }),
                     ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                        },
-                      }),
-                    ),
+                    Effect.andThen(publish()),
                   )
                 }
               }
 
-              return ctx.metadata({
-                metadata: {
-                  output: last,
-                },
-              })
+              return publish()
             }),
           )
 
@@ -557,6 +558,8 @@ export const ShellTool = Tool.define(
           return exit.kind === "exit" ? exit.code : null
         }),
       ).pipe(Effect.orDie)
+
+      yield* publish(true)
 
       const meta: string[] = []
       if (expired) {
