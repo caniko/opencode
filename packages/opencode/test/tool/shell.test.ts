@@ -1329,4 +1329,69 @@ describe("tool.shell truncation", () => {
       }),
     ),
   )
+
+  if (process.platform === "linux") {
+    const withToolOom = (value: string | undefined, self: Effect.Effect<void, unknown, ShellTestServices>) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const prev = process.env.OPENCODE_TOOL_OOM_SCORE_ADJ
+          if (value === undefined) delete process.env.OPENCODE_TOOL_OOM_SCORE_ADJ
+          else process.env.OPENCODE_TOOL_OOM_SCORE_ADJ = value
+          return prev
+        }),
+        () => self,
+        (prev) =>
+          Effect.sync(() => {
+            if (prev === undefined) delete process.env.OPENCODE_TOOL_OOM_SCORE_ADJ
+            else process.env.OPENCODE_TOOL_OOM_SCORE_ADJ = prev
+          }),
+      )
+
+    it.live("raises tool child oom_score_adj before exec and leaves the parent unchanged", () =>
+      withToolOom(
+        "999",
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const parent = (yield* Effect.promise(() => Bun.file("/proc/self/oom_score_adj").text())).trim()
+            const result = yield* run({
+              command: 'printf "%s %s\\n" "$(cat /proc/self/oom_score_adj)" "$(cat /proc/$PPID/oom_score_adj)"',
+            })
+            expect(result.metadata.exit).toBe(0)
+            expect(result.output.trim()).toBe(`999 ${parent}`)
+          }),
+        ),
+      ),
+    )
+
+    it.live("biases a nondumpable tool descendant through the shell self-write", () =>
+      withToolOom(
+        "999",
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const result = yield* run({
+              command:
+                'python3 -c "import ctypes,sys; r=ctypes.CDLL(\'libc.so.6\').prctl(4,0); sys.exit(2) if r else sys.stdout.write(open(\'/proc/self/oom_score_adj\').read())"',
+            })
+            expect(result.metadata.exit).toBe(0)
+            expect(result.output.trim()).toBe("999")
+          }),
+        ),
+      ),
+    )
+
+    it.live("fails closed on invalid OPENCODE_TOOL_OOM_SCORE_ADJ", () =>
+      withToolOom(
+        "nope",
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const err = yield* fail({ command: "echo hi" })
+            expect(err.message).toContain("OPENCODE_TOOL_OOM_SCORE_ADJ")
+          }),
+        ),
+      ),
+    )
+  }
 })

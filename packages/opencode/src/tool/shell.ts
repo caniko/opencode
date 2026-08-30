@@ -290,6 +290,20 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
   })
 })
 
+function toolOomCommand(shell: string, command: string, env: NodeJS.ProcessEnv) {
+  if (process.platform !== "linux" || !Shell.posix(shell)) return command
+  const raw = env.OPENCODE_TOOL_OOM_SCORE_ADJ
+  if (!raw) return command
+  const adj = Number(raw)
+  if (!/^-?\d+$/.test(raw) || adj < -1000 || adj > 1000) {
+    throw new Error("OPENCODE_TOOL_OOM_SCORE_ADJ must be an integer between -1000 and 1000")
+  }
+  // Child shells inherit the parent's adj. Raise ours before the user command
+  // so descendants are sacrificial even when a poller never sees them.
+  return `printf '%s\\n' '${adj}' > /proc/self/oom_score_adj || exit $?
+${command}`
+}
+
 function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
   if (process.platform === "win32" && Shell.ps(shell)) {
     return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
@@ -300,7 +314,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     })
   }
 
-  return ChildProcess.make(command, [], {
+  return ChildProcess.make(toolOomCommand(shell, command, env), [], {
     shell,
     cwd,
     env,
