@@ -4,6 +4,8 @@
 
 - **Schema**: Drizzle schema lives in `packages/core/src/**/*.sql.ts`.
 - **Migrations**: database migrations live in `packages/core` and are applied by core.
+- Running tool progress after the first snapshot is live-only (`EventV2.publishEphemeral`); it is not inserted into `event`. Durable tool `metadata.output` is capped at 30_000 characters. Truncated tool output keeps a file path plus `bytes`/`digest` on the completed part.
+- Legacy SQLite growth from pre-fix running snapshots: `opencode db compact` (dry-run), `--apply` to write, `--apply --vacuum` to reclaim pages. This is cleanup, not the runtime fix.
 
 ## Development server
 
