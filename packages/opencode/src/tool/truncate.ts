@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { NodePath } from "@effect/platform-node"
 import { Cause, Duration, Effect, Layer, Option, Schedule, Context } from "effect"
 import path from "path"
@@ -5,7 +6,7 @@ import type { Agent } from "../agent/agent"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { evaluate } from "@/permission/evaluate"
 import { Config } from "@/config/config"
-import { Identifier } from "../id/id"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { ToolID } from "./schema"
 import { TRUNCATION_DIR } from "./truncation-dir"
 
@@ -16,7 +17,9 @@ export const MAX_BYTES = 50 * 1024
 export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
-export type Result = { content: string; truncated: false } | { content: string; truncated: true; outputPath: string }
+export type Result =
+  | { content: string; truncated: false }
+  | { content: string; truncated: true; outputPath: string; bytes: number; digest: string }
 
 export interface Options {
   maxLines?: number
@@ -45,22 +48,23 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Truncate") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
 
     const cleanup = Effect.fn("Truncate.cleanup")(function* () {
-      const cutoff = Identifier.timestamp(
-        Identifier.create("tool", "ascending", Date.now() - Duration.toMillis(RETENTION)),
-      )
+      const cutoff = Date.now() - Duration.toMillis(RETENTION)
       const entries = yield* fs.readDirectory(TRUNCATION_DIR).pipe(
         Effect.map((all) => all.filter((name) => name.startsWith("tool_"))),
         Effect.catch(() => Effect.succeed([])),
       )
       for (const entry of entries) {
-        if (Identifier.timestamp(entry) >= cutoff) continue
-        yield* fs.remove(path.join(TRUNCATION_DIR, entry)).pipe(Effect.catch(() => Effect.void))
+        const file = path.join(TRUNCATION_DIR, entry)
+        const info = yield* fs.stat(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        const mtime = info && Option.getOrUndefined(info.mtime)
+        if (!mtime || mtime.getTime() >= cutoff) continue
+        yield* fs.remove(file).pipe(Effect.catch(() => Effect.void))
       }
     })
 
@@ -136,6 +140,8 @@ export const layer = Layer.effect(
             : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`,
         truncated: true,
         outputPath: file,
+        bytes: totalBytes,
+        digest: Hash.sha256(text),
       } as const
     })
 
@@ -150,6 +156,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(FSUtil.defaultLayer), Layer.provide(NodePath.layer))
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [FSUtil.node] })
 
 export * as Truncate from "./truncate"

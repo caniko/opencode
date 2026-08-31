@@ -1,9 +1,10 @@
 import type { Argv } from "yargs"
 import { spawn } from "child_process"
 import { Database } from "@opencode-ai/core/database/database"
+import { ToolOutputCompact } from "@opencode-ai/core/session/tool-output-compact"
 import { Effect } from "effect"
 import { sql } from "drizzle-orm"
-import { effectCmd } from "../effect-cmd"
+import { effectCmd, fail } from "../effect-cmd"
 
 const QueryCommand = effectCmd({
   command: "$0 [query]",
@@ -51,12 +52,37 @@ const PathCommand = effectCmd({
   }),
 })
 
+const CompactCommand = effectCmd({
+  command: "compact",
+  describe: "remove superseded running tool snapshots and bound stored tool output",
+  instance: false,
+  builder: (yargs: Argv) => {
+    return yargs
+      .option("apply", {
+        type: "boolean",
+        default: false,
+        describe: "write changes (default is dry-run)",
+      })
+      .option("vacuum", {
+        type: "boolean",
+        default: false,
+        describe: "VACUUM after apply",
+      })
+  },
+  handler: Effect.fn("Cli.db.compact")(function* (args: { apply: boolean; vacuum: boolean }) {
+    if (args.vacuum && !args.apply) return yield* fail("db compact --vacuum requires --apply")
+    const report = yield* ToolOutputCompact.compact({ apply: args.apply, vacuum: args.vacuum })
+    console.log(JSON.stringify(report, null, 2))
+    if (!args.apply) console.error("dry-run; pass --apply to write")
+  }),
+})
+
 export const DbCommand = effectCmd({
   command: "db",
   describe: "database tools",
   instance: false,
   builder: (yargs: Argv) => {
-    return yargs.command(QueryCommand).command(PathCommand).demandCommand()
+    return yargs.command(QueryCommand).command(PathCommand).command(CompactCommand).demandCommand()
   },
   handler: Effect.fn("Cli.db")(function* () {}),
 })

@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Config } from "@/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { MessageV2 } from "@/session/message-v2"
@@ -55,7 +56,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Image") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
@@ -166,6 +167,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Config.defaultLayer))
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [Config.node] })
 
 export * as Image from "./image"

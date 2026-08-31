@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import type {
   Hooks,
   PluginInput,
@@ -12,12 +13,15 @@ import { CodexAuthPlugin } from "./openai/codex"
 import { Session } from "@/session/session"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { CopilotAuthPlugin } from "./github-copilot/copilot"
+import { ModalPlugin } from "./modal/modal"
 import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
 import { PoeAuthPlugin } from "opencode-poe-auth"
 import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cloudflare"
 import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
+import { CerebrasPlugin } from "./cerebras"
+import { SnowflakeCortexAuthPlugin } from "./snowflake-cortex"
 import { Effect, Layer, Context } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -68,13 +72,16 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
         experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
       }),
     CopilotAuthPlugin,
+    ModalPlugin,
     GitlabAuthPlugin,
     PoeAuthPlugin,
     CloudflareWorkersAuthPlugin,
     CloudflareAIGatewayAuthPlugin,
     AzureAuthPlugin,
     DigitalOceanAuthPlugin,
+    SnowflakeCortexAuthPlugin,
     XaiAuthPlugin,
+    CerebrasPlugin,
   ]
 }
 
@@ -117,7 +124,7 @@ async function applyPlugin(load: PluginLoader.Loaded, input: PluginInput, hooks:
   }
 }
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
@@ -135,11 +142,12 @@ export const layer = Layer.effect(
 
         const { Server } = yield* Effect.promise(() => import("../server/server"))
 
+        const serverUrl = Server.url
         const client = createOpencodeClient({
-          baseUrl: "http://localhost:4096",
+          baseUrl: serverUrl?.toString() ?? "http://localhost:4096",
           directory: ctx.directory,
           headers: ServerAuth.headers(),
-          fetch: async (...args) => Server.Default().app.fetch(...args),
+          ...(serverUrl ? {} : { fetch: async (...args) => Server.Default().app.fetch(...args) }),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {
@@ -162,8 +170,11 @@ export const layer = Layer.effect(
         for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
-            catch: (err) => {},
-          }).pipe(Effect.option)
+            catch: errorMessage,
+          }).pipe(
+            Effect.tapError((error) => Effect.logError("failed to load internal plugin", { name: plugin.name, error })),
+            Effect.option,
+          )
           if (init._tag === "Some") hooks.push(init.value)
         }
 
@@ -217,6 +228,7 @@ export const layer = Layer.effect(
               return message
             },
           }).pipe(
+            Effect.tapError((error) => Effect.logError("failed to load plugin", { path: load.spec, error })),
             Effect.catch(() => {
               // TODO: make proper events for this
               // events.publish(Session.Event.Error, {
@@ -256,8 +268,11 @@ export const layer = Layer.effect(
             (hook) =>
               Effect.tryPromise({
                 try: () => Promise.resolve(hook.dispose?.()),
-                catch: (error) => {},
-              }).pipe(Effect.ignore),
+                catch: errorMessage,
+              }).pipe(
+                Effect.tapError((error) => Effect.logError("plugin dispose hook failed", { error })),
+                Effect.ignore,
+              ),
             { discard: true },
           ),
         )
@@ -294,10 +309,10 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(
-  Layer.provide(EventV2Bridge.defaultLayer),
-  Layer.provide(Config.defaultLayer),
-  Layer.provide(RuntimeFlags.defaultLayer),
-)
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [EventV2Bridge.node, Config.node, RuntimeFlags.node],
+})
 
 export * as Plugin from "."

@@ -1,3 +1,5 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
@@ -29,8 +31,9 @@ import { waitEvent } from "./util"
 import { WorkspaceRef } from "@/effect/instance-ref"
 import { Vcs } from "@/project/vcs"
 import { InstanceStore } from "@/project/instance-store"
-import { InstanceBootstrap } from "@/project/bootstrap"
 import { WorkspaceAdapterRuntime } from "./workspace-adapter-runtime"
+import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
+import { WorkspaceEvent } from "@opencode-ai/schema/workspace-event"
 
 export const Info = Schema.Struct({
   ...WorkspaceInfoSchema.fields,
@@ -38,27 +41,10 @@ export const Info = Schema.Struct({
 }).annotate({ identifier: "Workspace" })
 export type Info = WorkspaceInfo & { timeUsed: number }
 
-export const ConnectionStatus = Schema.Struct({
-  workspaceID: WorkspaceV2.ID,
-  status: Schema.Literals(["connected", "connecting", "disconnected", "error"]),
-})
-export type ConnectionStatus = Schema.Schema.Type<typeof ConnectionStatus>
+export const ConnectionStatus = WorkspaceEvent.ConnectionStatus
+export type ConnectionStatus = WorkspaceEvent.ConnectionStatus
 
-export const Event = {
-  Ready: EventV2.define({
-    type: "workspace.ready",
-    schema: {
-      name: Schema.String,
-    },
-  }),
-  Failed: EventV2.define({
-    type: "workspace.failed",
-    schema: {
-      message: Schema.String,
-    },
-  }),
-  Status: EventV2.define({ type: "workspace.status", schema: ConnectionStatus.fields }),
-}
+export const Event = WorkspaceEvent
 
 function fromRow(row: typeof WorkspaceTable.$inferSelect): Info {
   return {
@@ -129,7 +115,7 @@ export class SyncTimeoutError extends Schema.TaggedErrorClass<SyncTimeoutError>(
 
 export class SyncAbortedError extends Schema.TaggedErrorClass<SyncAbortedError>()("WorkspaceSyncAbortedError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 type CreateError = Auth.AuthError
@@ -164,7 +150,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Wo
 
 export const use = serviceUse(Service)
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const auth = yield* Auth.Service
@@ -586,7 +572,13 @@ export const layer = Layer.effect(
 
             if (target.type === "remote") {
               yield* syncHistory(previous, target.url, target.headers).pipe(
-                Effect.catch((error) => Effect.sync(() => {})),
+                Effect.catch((error) =>
+                  Effect.logWarning("session warp final source sync failed", {
+                    workspaceID: previous.id,
+                    sessionID: input.sessionID,
+                    error: errorData(error),
+                  }),
+                ),
               )
             } else {
               yield* prompt.cancel(input.sessionID)
@@ -609,7 +601,7 @@ export const layer = Layer.effect(
                   }),
                 fallback: "",
                 response: "text",
-              }).pipe(Effect.provide(InstanceStore.defaultLayer.pipe(Layer.provide(InstanceBootstrap.defaultLayer))))
+              }).pipe(Effect.provide(AppNodeBuilderV1.build(InstanceStore.node)))
             : ""
 
         if (sourcePatch) {
@@ -625,7 +617,7 @@ export const layer = Layer.effect(
                 body: HttpBody.jsonUnsafe({ patch: sourcePatch }),
               }),
             fallback: { applied: false },
-          }).pipe(Effect.provide(InstanceStore.defaultLayer.pipe(Layer.provide(InstanceBootstrap.defaultLayer))))
+          }).pipe(Effect.provide(AppNodeBuilderV1.build(InstanceStore.node)))
         }
 
         if (input.workspaceID === null) {
@@ -722,6 +714,7 @@ export const layer = Layer.effect(
     })
 
     const list = Effect.fn("Workspace.list")(function* (project: Project.Info) {
+      if (!flags.experimentalWorkspaces) return []
       return (yield* db
         .select()
         .from(WorkspaceTable)
@@ -739,9 +732,7 @@ export const layer = Layer.effect(
         ([type, adapter]) =>
           WorkspaceAdapterRuntime.list(adapter).pipe(
             Effect.catchCause((error) =>
-              Effect.sync(() => {
-                return []
-              }),
+              Effect.logWarning("workspace adapter list failed", { type, error }).pipe(Effect.as([])),
             ),
           ),
         { concurrency: "unbounded" },
@@ -817,7 +808,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           yield* WorkspaceAdapterRuntime.remove(info)
         }),
-        () => Effect.sync(() => {}),
+        () => Effect.logError("adapter not available when removing workspace", { type: row.type }),
       )
 
       yield* db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).run().pipe(Effect.orDie)
@@ -861,6 +852,7 @@ export const layer = Layer.effect(
     })
 
     const startWorkspaceSyncing = Effect.fn("Workspace.startWorkspaceSyncing")(function* (projectID: ProjectV2.ID) {
+      if (!flags.experimentalWorkspaces) return
       const rows = yield* db
         .selectDistinct({ workspace: WorkspaceTable })
         .from(WorkspaceTable)
@@ -893,19 +885,6 @@ export const layer = Layer.effect(
       startWorkspaceSyncing,
     })
   }),
-)
-
-export const defaultLayer = layer.pipe(
-  Layer.provide(Auth.defaultLayer),
-  Layer.provide(Session.defaultLayer),
-  Layer.provide(SessionPrompt.defaultLayer),
-  Layer.provide(Project.defaultLayer),
-  Layer.provide(Vcs.defaultLayer),
-  Layer.provide(FSUtil.defaultLayer),
-  Layer.provide(Database.defaultLayer),
-  Layer.provide(EventV2Bridge.defaultLayer),
-  Layer.provide(FetchHttpClient.layer),
-  Layer.provide(RuntimeFlags.defaultLayer),
 )
 
 const TIMEOUT = 5000
@@ -967,5 +946,21 @@ function route(url: string | URL, path: string) {
   next.hash = ""
   return next
 }
+
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [
+    Auth.node,
+    Session.node,
+    SessionPrompt.node,
+    httpClient,
+    EventV2Bridge.node,
+    Vcs.node,
+    RuntimeFlags.node,
+    FSUtil.node,
+    Database.node,
+  ],
+})
 
 export * as Workspace from "./workspace"

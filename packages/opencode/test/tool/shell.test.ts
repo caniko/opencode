@@ -1,17 +1,19 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { describe, expect } from "bun:test"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
-import { Shell } from "../../src/shell/shell"
+import { Shell } from "@opencode-ai/core/shell"
 import { ShellTool } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -22,13 +24,17 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
 
 const shellLayer = Layer.mergeAll(
-  CrossSpawnSpawner.defaultLayer,
-  FSUtil.defaultLayer,
-  Plugin.defaultLayer,
-  Truncate.defaultLayer,
-  Config.defaultLayer,
-  Agent.defaultLayer,
-  RuntimeFlags.defaultLayer,
+  LayerNode.compile(
+    LayerNode.group([
+      CrossSpawnSpawner.node,
+      FSUtil.node,
+      Plugin.node,
+      Truncate.node,
+      Config.node,
+      Agent.node,
+      RuntimeFlags.node,
+    ]),
+  ),
   testInstanceStoreLayer,
 )
 const it = testEffect(shellLayer)
@@ -117,6 +123,11 @@ const fill = (mode: "lines" | "bytes", n: number) => {
   if (PS.has(sh())) return `& ${text}`
   return text
 }
+const script = (code: string) => {
+  const text = `${bin} -e ${evalarg(code)}`
+  if (PS.has(sh())) return `& ${text}`
+  return text
+}
 const glob = (p: string) =>
   process.platform === "win32" ? Filesystem.normalizePathPattern(p) : p.replaceAll("\\", "/")
 
@@ -182,7 +193,6 @@ describe("tool.shell", () => {
       Effect.gen(function* () {
         const result = yield* run({
           command: "echo test",
-          description: "Echo test message",
         })
         expect(result.metadata.exit).toBe(0)
         expect(result.metadata.output).toContain("test")
@@ -204,7 +214,6 @@ describe("tool.shell", () => {
           const result = yield* bash.execute(
             {
               command: "echo fallback",
-              description: "Echo fallback text",
             },
             ctx,
           )
@@ -227,7 +236,6 @@ describe("tool.shell permissions", () => {
           yield* run(
             {
               command: "echo hello",
-              description: "Echo hello",
             },
             capture(requests),
           )
@@ -249,7 +257,6 @@ describe("tool.shell permissions", () => {
           yield* run(
             {
               command: "echo foo && echo bar",
-              description: "Echo twice",
             },
             capture(requests),
           )
@@ -273,7 +280,6 @@ describe("tool.shell permissions", () => {
             yield* run(
               {
                 command: "Write-Host foo; if ($?) { Write-Host bar }",
-                description: "Check PowerShell conditional",
               },
               capture(requests),
             )
@@ -303,7 +309,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: "Remove-Item -Recurse tmp",
-                    description: "Remove a temp directory",
                   },
                   capture(requests, err),
                 ),
@@ -331,7 +336,6 @@ describe("tool.shell permissions", () => {
           yield* fail(
             {
               command: `cat ${file}`,
-              description: "Read wildcard path",
             },
             capture(requests, err),
           ),
@@ -359,7 +363,6 @@ describe("tool.shell permissions", () => {
                 yield* run(
                   {
                     command: `echo $(cat "${file}")`,
-                    description: "Read nested bash file",
                   },
                   capture(requests),
                 )
@@ -389,7 +392,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: `Copy-Item -PassThru "${process.env.WINDIR!.replaceAll("\\", "/")}/win.ini" ./out`,
-                    description: "Copy Windows ini",
                   },
                   capture(requests, err),
                 ),
@@ -415,7 +417,6 @@ describe("tool.shell permissions", () => {
               yield* run(
                 {
                   command: `Write-Output $(Get-Content ${file})`,
-                  description: "Read nested PowerShell file",
                 },
                 capture(requests),
               )
@@ -446,7 +447,6 @@ describe("tool.shell permissions", () => {
                   yield* fail(
                     {
                       command: 'Get-Content "C:../outside.txt"',
-                      description: "Read drive-relative file",
                     },
                     capture(requests, err),
                   ),
@@ -474,7 +474,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: 'Get-Content "$HOME/.ssh/config"',
-                    description: "Read home config",
                   },
                   capture(requests, err),
                 ),
@@ -503,7 +502,6 @@ describe("tool.shell permissions", () => {
                   yield* fail(
                     {
                       command: 'Get-Content "$PWD/../outside.txt"',
-                      description: "Read pwd-relative file",
                     },
                     capture(requests, err),
                   ),
@@ -531,7 +529,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: 'Get-Content "$PSHOME/outside.txt"',
-                    description: "Read pshome file",
                   },
                   capture(requests, err),
                 ),
@@ -567,7 +564,6 @@ describe("tool.shell permissions", () => {
                     yield* fail(
                       {
                         command: `Get-Content -Path "${root}$env:${key}\\Windows\\win.ini"`,
-                        description: "Read Windows ini with missing env",
                       },
                       capture(requests, err),
                     ),
@@ -598,7 +594,6 @@ describe("tool.shell permissions", () => {
               yield* run(
                 {
                   command: "Get-Content $env:WINDIR/win.ini",
-                  description: "Read Windows ini from env",
                 },
                 capture(requests),
               )
@@ -626,7 +621,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: `Get-Content -Path FileSystem::${process.env.WINDIR!.replaceAll("\\", "/")}/win.ini`,
-                    description: "Read Windows ini from FileSystem provider",
                   },
                   capture(requests, err),
                 ),
@@ -655,7 +649,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: "Get-Content ${env:WINDIR}/win.ini",
-                    description: "Read Windows ini from braced env",
                   },
                   capture(requests, err),
                 ),
@@ -682,7 +675,6 @@ describe("tool.shell permissions", () => {
               yield* run(
                 {
                   command: "Set-Location C:/Windows",
-                  description: "Change location",
                 },
                 capture(requests),
               )
@@ -710,7 +702,6 @@ describe("tool.shell permissions", () => {
               yield* run(
                 {
                   command: "Write-Output ('a' * 3)",
-                  description: "Write repeated text",
                 },
                 capture(requests),
               )
@@ -736,7 +727,6 @@ describe("tool.shell permissions", () => {
             yield* run(
               {
                 command: `TYPE "${path.join(process.env.WINDIR!, "win.ini")}"`,
-                description: "Read Windows ini with cmd",
               },
               capture(requests),
             )
@@ -761,7 +751,6 @@ describe("tool.shell permissions", () => {
             yield* fail(
               {
                 command: "cd ../",
-                description: "Change to parent directory",
               },
               capture(requests, err),
             ),
@@ -786,7 +775,6 @@ describe("tool.shell permissions", () => {
               {
                 command: "echo ok",
                 workdir: os.tmpdir(),
-                description: "Echo from temp dir",
               },
               capture(requests, err),
             ),
@@ -817,7 +805,6 @@ describe("tool.shell permissions", () => {
                   {
                     command: "echo ok",
                     workdir: dir,
-                    description: "Echo from external dir",
                   },
                   capture(requests, err),
                 ),
@@ -850,7 +837,6 @@ describe("tool.shell permissions", () => {
                   {
                     command: "echo ok",
                     workdir: "/tmp",
-                    description: "Echo from Git Bash tmp",
                   },
                   capture(requests, err),
                 ),
@@ -878,7 +864,6 @@ describe("tool.shell permissions", () => {
                 yield* fail(
                   {
                     command: "cat /tmp/opencode-does-not-exist",
-                    description: "Read Git Bash tmp file",
                   },
                   capture(requests, err),
                 ),
@@ -910,7 +895,6 @@ describe("tool.shell permissions", () => {
             yield* fail(
               {
                 command: `cat ${filepath}`,
-                description: "Read external file",
               },
               capture(requests, err),
             ),
@@ -922,7 +906,6 @@ describe("tool.shell permissions", () => {
           expect(extDirReq!.always).toContain(expected)
           expect(extDirReq!.metadata).toMatchObject({
             command: `cat ${filepath}`,
-            description: "Read external file",
             directories: [outerTmp],
             patterns: [expected],
           })
@@ -942,7 +925,6 @@ describe("tool.shell permissions", () => {
           yield* run(
             {
               command: `rm -rf ${path.join(tmp, "nested")}`,
-              description: "Remove nested dir",
             },
             capture(requests),
           )
@@ -963,7 +945,6 @@ describe("tool.shell permissions", () => {
           yield* run(
             {
               command: "git log --oneline -5",
-              description: "Git log",
             },
             capture(requests),
           )
@@ -985,7 +966,6 @@ describe("tool.shell permissions", () => {
           yield* run(
             {
               command: "cd .",
-              description: "Stay in current directory",
             },
             capture(requests),
           )
@@ -1004,12 +984,9 @@ describe("tool.shell permissions", () => {
         Effect.gen(function* () {
           const err = new Error("stop after permission")
           const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
-          expect(
-            yield* fail(
-              { command: "echo test > output.txt", description: "Redirect test output" },
-              capture(requests, err),
-            ),
-          ).toMatchObject({ message: err.message })
+          expect(yield* fail({ command: "echo test > output.txt" }, capture(requests, err))).toMatchObject({
+            message: err.message,
+          })
           const bashReq = requests.find((r) => r.permission === "bash")
           expect(bashReq).toBeDefined()
           expect(bashReq!.patterns).toContain("echo test > output.txt")
@@ -1025,7 +1002,7 @@ describe("tool.shell permissions", () => {
         tmp,
         Effect.gen(function* () {
           const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
-          yield* run({ command: "ls -la", description: "List" }, capture(requests))
+          yield* run({ command: "ls -la" }, capture(requests))
           const bashReq = requests.find((r) => r.permission === "bash")
           expect(bashReq).toBeDefined()
           expect(bashReq!.always[0]).toBe("ls *")
@@ -1047,7 +1024,6 @@ describe("tool.shell abort", () => {
           const res = yield* run(
             {
               command: `echo before && sleep 30`,
-              description: "Long running command",
             },
             {
               ...ctx,
@@ -1078,7 +1054,6 @@ describe("tool.shell abort", () => {
         Effect.gen(function* () {
           const result = yield* run({
             command: `sleep 60`,
-            description: "Timeout test",
             timeout: 500,
           })
           expect(result.output).toContain("shell tool terminated command after exceeding timeout")
@@ -1099,7 +1074,6 @@ describe("tool.shell abort", () => {
           const result = yield* tool.execute(
             {
               command: `sleep 60`,
-              description: "Default timeout test",
             },
             ctx,
           )
@@ -1116,7 +1090,6 @@ describe("tool.shell abort", () => {
         Effect.gen(function* () {
           const result = yield* run({
             command: `echo stdout_msg && echo stderr_msg >&2`,
-            description: "Stderr test",
           })
           expect(result.output).toContain("stdout_msg")
           expect(result.output).toContain("stderr_msg")
@@ -1132,7 +1105,6 @@ describe("tool.shell abort", () => {
       Effect.gen(function* () {
         const result = yield* run({
           command: `exit 42`,
-          description: "Non-zero exit",
         })
         expect(result.metadata.exit).toBe(42)
       }),
@@ -1147,7 +1119,6 @@ describe("tool.shell abort", () => {
         const result = yield* run(
           {
             command: `echo first && sleep 0.1 && echo second`,
-            description: "Streaming test",
           },
           {
             ...ctx,
@@ -1164,6 +1135,112 @@ describe("tool.shell abort", () => {
       }),
     ),
   )
+
+  it.live("coalesces streaming metadata and flushes the final preview", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: script(
+              `for(let i=0;i<1000;i++)process.stdout.write(String(i)+String.fromCharCode(10));for(let i=0;i<60;i++){process.stdout.write(String(i)+String.fromCharCode(10));await Bun.sleep(10)}`,
+            ),
+          },
+          {
+            ...ctx,
+            metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+          },
+        )
+        expect(updates.length).toBeLessThanOrEqual(6)
+        expect(new Set(updates).size).toBe(updates.length)
+        expect(updates.at(-1)).toBe(result.metadata.output)
+      }),
+    ),
+  )
+
+  it.live("flushes output produced inside the throttle window on non-zero exit", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: script(
+              `process.stdout.write(String.fromCharCode(97));await Bun.sleep(50);process.stdout.write(String.fromCharCode(98));process.exit(7)`,
+            ),
+          },
+          {
+            ...ctx,
+            metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+          },
+        )
+        expect(result.metadata.exit).toBe(7)
+        expect(updates.at(-1)).toBe("ab")
+      }),
+    ),
+  )
+
+  it.live(
+    "flushes output produced inside the throttle window on timeout",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const updates: string[] = []
+          const result = yield* run(
+            {
+              command: script(
+                `process.stdout.write(String.fromCharCode(97));await Bun.sleep(50);process.stdout.write(String.fromCharCode(98));await Bun.sleep(60000)`,
+              ),
+              timeout: 1000,
+            },
+            {
+              ...ctx,
+              metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+            },
+          )
+          expect(result.output).toContain("shell tool terminated command")
+          expect(updates.at(-1)).toBe("ab")
+        }),
+      ),
+    15_000,
+  )
+
+  it.live(
+    "flushes output produced inside the throttle window on abort",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const controller = new AbortController()
+          const updates: string[] = []
+          let armed = false
+          const result = yield* run(
+            {
+              command: script(
+                `process.stdout.write(String.fromCharCode(97));await Bun.sleep(50);process.stdout.write(String.fromCharCode(98));await Bun.sleep(60000)`,
+              ),
+            },
+            {
+              ...ctx,
+              abort: controller.signal,
+              metadata: (input) =>
+                Effect.sync(() => {
+                  const output = input.metadata?.output ?? ""
+                  updates.push(output)
+                  if (output !== "a" || armed) return
+                  armed = true
+                  setTimeout(() => controller.abort(), 100)
+                }),
+            },
+          )
+          expect(result.output).toContain("User aborted the command")
+          expect(updates.at(-1)).toBe("ab")
+        }),
+      ),
+    15_000,
+  )
 })
 
 describe("tool.shell truncation", () => {
@@ -1174,7 +1251,6 @@ describe("tool.shell truncation", () => {
         const lineCount = Truncate.MAX_LINES + 500
         const result = yield* run({
           command: fill("lines", lineCount),
-          description: "Generate lines exceeding limit",
         })
         mustTruncate(result)
         expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
@@ -1190,7 +1266,6 @@ describe("tool.shell truncation", () => {
         const byteCount = Truncate.MAX_BYTES + 10000
         const result = yield* run({
           command: fill("bytes", byteCount),
-          description: "Generate bytes exceeding limit",
         })
         mustTruncate(result)
         expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
@@ -1205,7 +1280,6 @@ describe("tool.shell truncation", () => {
       Effect.gen(function* () {
         const result = yield* run({
           command: fill("lines", 1),
-          description: "Generate one line",
         })
         expect((result.metadata as { truncated?: boolean }).truncated).toBe(false)
         expect(result.output).toContain("1")
@@ -1220,7 +1294,6 @@ describe("tool.shell truncation", () => {
         const lineCount = Truncate.MAX_LINES + 100
         const result = yield* run({
           command: fill("lines", lineCount),
-          description: "Generate lines for file check",
         })
         mustTruncate(result)
 
@@ -1232,7 +1305,96 @@ describe("tool.shell truncation", () => {
         expect(lines.length).toBe(lineCount)
         expect(lines[0]).toBe("1")
         expect(lines[lineCount - 1]).toBe(String(lineCount))
+        expect(result.metadata.bytes).toBe(Buffer.byteLength(saved, "utf-8"))
+        expect(result.metadata.digest).toBe(Hash.sha256(saved))
       }),
     ),
   )
+
+  it.live("flushes the final truncated preview without duplicates", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: fill("bytes", Truncate.MAX_BYTES + 10000),
+          },
+          {
+            ...ctx,
+            metadata: (input) => Effect.sync(() => updates.push(input.metadata?.output ?? "")),
+          },
+        )
+        mustTruncate(result)
+        expect(result.metadata.outputPath).toBeTruthy()
+        expect(new Set(updates).size).toBe(updates.length)
+        expect(updates.at(-1)).toBe(result.metadata.output)
+      }),
+    ),
+  )
+
+  if (process.platform === "linux") {
+    const withToolOom = (value: string | undefined, self: Effect.Effect<void, unknown, ShellTestServices>) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const prev = process.env.OPENCODE_TOOL_OOM_SCORE_ADJ
+          if (value === undefined) delete process.env.OPENCODE_TOOL_OOM_SCORE_ADJ
+          else process.env.OPENCODE_TOOL_OOM_SCORE_ADJ = value
+          return prev
+        }),
+        () => self,
+        (prev) =>
+          Effect.sync(() => {
+            if (prev === undefined) delete process.env.OPENCODE_TOOL_OOM_SCORE_ADJ
+            else process.env.OPENCODE_TOOL_OOM_SCORE_ADJ = prev
+          }),
+      )
+
+    it.live("raises tool child oom_score_adj before exec and leaves the parent unchanged", () =>
+      withToolOom(
+        "999",
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const parent = (yield* Effect.promise(() => Bun.file("/proc/self/oom_score_adj").text())).trim()
+            const result = yield* run({
+              command: 'printf "%s %s\\n" "$(cat /proc/self/oom_score_adj)" "$(cat /proc/$PPID/oom_score_adj)"',
+            })
+            expect(result.metadata.exit).toBe(0)
+            expect(result.output.trim()).toBe(`999 ${parent}`)
+          }),
+        ),
+      ),
+    )
+
+    it.live("biases a nondumpable tool descendant through the shell self-write", () =>
+      withToolOom(
+        "999",
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const result = yield* run({
+              command:
+                'python3 -c "import ctypes,sys; r=ctypes.CDLL(\'libc.so.6\').prctl(4,0); sys.exit(2) if r else sys.stdout.write(open(\'/proc/self/oom_score_adj\').read())"',
+            })
+            expect(result.metadata.exit).toBe(0)
+            expect(result.output.trim()).toBe("999")
+          }),
+        ),
+      ),
+    )
+
+    it.live("fails closed on invalid OPENCODE_TOOL_OOM_SCORE_ADJ", () =>
+      withToolOom(
+        "nope",
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const err = yield* fail({ command: "echo hi" })
+            expect(err.message).toContain("OPENCODE_TOOL_OOM_SCORE_ADJ")
+          }),
+        ),
+      ),
+    )
+  }
 })

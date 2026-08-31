@@ -14,22 +14,23 @@ const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
 
 const capture = () => {
   const published: Array<{ readonly type: string; readonly data: unknown }> = []
+  const publish: EventV2.Publish = (definition, data) =>
+    Effect.sync(() => {
+      const event = { id: EventV2.ID.create(), type: definition.type, data } as EventV2.Payload<typeof definition>
+      published.push({
+        type: definition.durable ? EventV2.versionedType(definition.type, definition.durable.version) : definition.type,
+        data,
+      })
+      return event
+    })
   const events = EventV2.Service.of({
-    publish: (definition, data) =>
-      Effect.sync(() => {
-        const event = { id: EventV2.ID.create(), type: definition.type, data } as EventV2.Payload<typeof definition>
-        published.push({
-          type: definition.sync ? EventV2.versionedType(definition.type, definition.sync.version) : definition.type,
-          data,
-        })
-        return event
-      }),
+    publish,
+    publishDurable: publish,
+    publishEphemeral: publish,
     subscribe: () => Stream.empty,
     all: () => Stream.empty,
-    aggregateEvents: () => Stream.empty,
-    sync: () => Effect.succeed(Effect.void),
+    durable: () => Stream.empty,
     listen: () => Effect.succeed(Effect.void),
-    beforeCommit: () => Effect.void,
     project: () => Effect.void,
     replay: () => Effect.void,
     replayAll: () => Effect.succeed(undefined),
@@ -124,4 +125,13 @@ test("old success event data containing result still decodes", () => {
     provider: { executed: false },
   })
   expect(decoded.result).toMatchObject({ type: "content" })
+})
+
+test("step finish records settlement without publishing step ended", async () => {
+  const { published, publisher } = capture()
+  await Effect.runPromise(publisher.publish(LLMEvent.stepStart({ index: 0 })))
+  await Effect.runPromise(publisher.publish(LLMEvent.stepFinish({ index: 0, reason: "stop" })))
+
+  expect(published.some((event) => event.type === "session.next.step.ended.2")).toBe(false)
+  expect(publisher.stepSettlement()).toMatchObject({ finish: "stop" })
 })

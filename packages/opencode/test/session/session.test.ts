@@ -1,6 +1,5 @@
 import { describe, expect } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { Deferred, Effect, Exit, Layer } from "effect"
@@ -8,26 +7,32 @@ import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { provideInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { Storage } from "@/storage/storage"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GlobalBus } from "@/bus/global"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { InstanceStore } from "@/project/instance-store"
+import { InstanceBootstrap } from "@/project/bootstrap"
 
 const it = testEffect(
-  Layer.mergeAll(
-    SessionNs.layer.pipe(
-      Layer.provide(Storage.defaultLayer),
-      Layer.provide(Database.defaultLayer),
-      Layer.provideMerge(EventV2Bridge.defaultLayer),
-      Layer.provide(SessionProjector.defaultLayer),
-      Layer.provide(RuntimeFlags.layer({ experimentalWorkspaces: false })),
-      Layer.provide(BackgroundJob.defaultLayer),
-    ),
-    CrossSpawnSpawner.defaultLayer,
-    testInstanceStoreLayer,
+  AppNodeBuilder.build(
+    LayerNode.group([
+      SessionNs.node,
+      EventV2Bridge.node,
+      SessionProjector.node,
+      CrossSpawnSpawner.node,
+      InstanceStore.node,
+    ]),
+    [
+      [RuntimeFlags.node, RuntimeFlags.layer({ experimentalWorkspaces: false })],
+      [
+        InstanceBootstrap.node,
+        Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void })),
+      ],
+    ],
   ),
 )
 
@@ -233,6 +238,38 @@ describe("Session", () => {
     }),
   )
 
+  it.instance("forks the chronological prefix across mixed message ID ordering", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({}), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const ids = ["msg_z9-before", "msg_z1-before-wrap", "msg_a0-after-wrap", "msg_a1-after"]
+      for (const [index, id] of ids.entries()) {
+        yield* session.updateMessage({
+          id: MessageID.make(id),
+          sessionID: created.id,
+          role: "user",
+          time: { created: index + 1 },
+          agent: "user",
+          model: { providerID: "test", modelID: "test" },
+        } as SessionV1.User)
+      }
+
+      const beforeWrap = yield* Effect.acquireRelease(
+        session.fork({ sessionID: created.id, messageID: MessageID.make(ids[1]!) }),
+        (info) => session.remove(info.id).pipe(Effect.ignore),
+      )
+      const afterWrap = yield* Effect.acquireRelease(
+        session.fork({ sessionID: created.id, messageID: MessageID.make(ids[2]!) }),
+        (info) => session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      expect((yield* session.messages({ sessionID: beforeWrap.id })).map((msg) => msg.info.time.created)).toEqual([1])
+      expect((yield* session.messages({ sessionID: afterWrap.id })).map((msg) => msg.info.time.created)).toEqual([1, 2])
+    }),
+  )
+
   it.instance("omits metadata when not provided", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
@@ -243,6 +280,112 @@ describe("Session", () => {
 
       expect(created.metadata).toBeUndefined()
       expect(saved.metadata).toBeUndefined()
+    }),
+  )
+
+  it.instance("does not persist mid-run tool snapshots", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const events = yield* EventV2Bridge.Service
+      const created = yield* Effect.acquireRelease(session.create({}), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: created.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "user",
+        model: { providerID: "test", modelID: "test" },
+      } as SessionV1.User)
+      const partID = PartID.ascending()
+      const live: Array<{ durable: boolean; status: string }> = []
+      const unsub = yield* events.listen((event) => {
+        if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
+        const part = (event.data as typeof SessionV1.Event.PartUpdated.data.Type).part
+        if (part.id !== partID || part.type !== "tool") return Effect.void
+        live.push({ durable: event.durable !== undefined, status: part.state.status })
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => unsub)
+      const running = (output: string) => ({
+        id: partID,
+        messageID,
+        sessionID: created.id,
+        type: "tool" as const,
+        callID: "call_bash",
+        tool: "bash",
+        state: {
+          status: "running" as const,
+          input: { command: "echo" },
+          metadata: { output },
+          time: { start: 1 },
+        },
+      })
+
+      yield* session.updatePart(running("start"))
+      yield* session.updatePart(running("start\nmore"))
+      yield* session.updatePart(running("start\nmore\nlots"))
+      yield* session.updatePart({
+        ...running("done"),
+        state: {
+          status: "completed" as const,
+          input: { command: "echo" },
+          output: "done",
+          title: "bash",
+          metadata: { output: "done" },
+          time: { start: 1, end: 2 },
+        },
+      })
+
+      expect(live).toEqual([
+        { durable: true, status: "running" },
+        { durable: false, status: "running" },
+        { durable: false, status: "running" },
+        { durable: true, status: "completed" },
+      ])
+    }),
+  )
+
+  it.instance("bounds projected running tool output", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({}), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: created.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "user",
+        model: { providerID: "test", modelID: "test" },
+      } as SessionV1.User)
+      const partID = PartID.ascending()
+      const output = "x".repeat(30_001)
+      yield* session.updatePart({
+        id: partID,
+        messageID,
+        sessionID: created.id,
+        type: "tool",
+        callID: "call_bash",
+        tool: "bash",
+        state: {
+          status: "running",
+          input: { command: "echo" },
+          metadata: { output },
+          time: { start: 1 },
+        },
+      })
+
+      const stored = yield* session.getPart({ sessionID: created.id, messageID, partID })
+      expect(stored?.type).toBe("tool")
+      if (stored?.type !== "tool") return
+      expect(stored.state.status).toBe("running")
+      if (stored.state.status !== "running") return
+      expect(stored.state.metadata?.output).toBe("...\n\n" + output.slice(-30_000))
     }),
   )
 })
