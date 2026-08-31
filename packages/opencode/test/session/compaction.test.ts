@@ -351,12 +351,12 @@ function plugin(ready: Deferred.Deferred<void>) {
   })
 }
 
-function autocontinue(enabled: boolean) {
+function autocontinue(enabled: boolean[]) {
   return Layer.mock(Plugin.Service)({
     trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
       if (name !== "experimental.compaction.autocontinue") return Effect.succeed(output)
       return Effect.sync(() => {
-        ;(output as { enabled: boolean }).enabled = enabled
+        ;(output as { enabled: boolean }).enabled = enabled.shift() ?? false
         return output
       })
     },
@@ -905,7 +905,7 @@ describe("session.compaction.process", () => {
   )
 
   it.instance(
-    "adds synthetic continue prompt when auto is enabled",
+    "adds synthetic continue prompt for an unanswered user turn",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
@@ -933,6 +933,85 @@ describe("session.compaction.process", () => {
         expect(last.parts[0].text).toContain("Continue if you have next steps")
       }
     }),
+  )
+
+  it.instance(
+    "does not add synthetic continue prompt after a completed turn",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const user = yield* createUserMessage(session.id, "hello")
+      yield* createAssistantMessage(session.id, user.id, test.directory)
+      yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: true })
+      const messages = yield* ssn.messages({ sessionID: session.id })
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: messages.at(-1)!.info.id,
+        messages,
+        sessionID: session.id,
+        auto: true,
+      })
+      expect(result).toBe("continue")
+
+      const all = yield* ssn.messages({ sessionID: session.id })
+      expect(
+        all.some(
+          (message) =>
+            message.info.role === "user" &&
+            message.parts.some((part) => part.type === "text" && part.metadata?.compaction_continue === true),
+        ),
+      ).toBe(false)
+    }),
+  )
+
+  itCompaction.instance(
+    "allows plugins to override synthetic continuation",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const user = yield* createUserMessage(session.id, "hello")
+      yield* createAssistantMessage(session.id, user.id, test.directory)
+      yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: true })
+      const messages = yield* ssn.messages({ sessionID: session.id })
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: messages.at(-1)!.info.id,
+        messages,
+        sessionID: session.id,
+        auto: true,
+      })
+      expect(result).toBe("continue")
+
+      const all = yield* ssn.messages({ sessionID: session.id })
+      expect(
+        all.some(
+          (message) =>
+            message.info.role === "user" &&
+            message.parts.some(
+              (part) => part.type === "text" && part.synthetic && part.metadata?.compaction_continue === true,
+            ),
+        ),
+      ).toBe(true)
+
+      const pending = yield* ssn.create({})
+      const pendingUser = yield* createUserMessage(pending.id, "pending")
+      const pendingMessages = yield* ssn.messages({ sessionID: pending.id })
+      yield* SessionCompaction.use.process({
+        parentID: pendingUser.id,
+        messages: pendingMessages,
+        sessionID: pending.id,
+        auto: true,
+      })
+      expect(
+        (yield* ssn.messages({ sessionID: pending.id })).some(
+          (message) =>
+            message.info.role === "user" &&
+            message.parts.some((part) => part.type === "text" && part.metadata?.compaction_continue === true),
+        ),
+      ).toBe(false)
+    }).pipe(withCompaction({ plugin: autocontinue([true, false]) })),
   )
 
   itCompaction.instance(
@@ -1100,38 +1179,6 @@ describe("session.compaction.process", () => {
       }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
     },
     { git: true },
-  )
-
-  itCompaction.instance(
-    "allows plugins to disable synthetic continue prompt",
-    Effect.gen(function* () {
-      const ssn = yield* SessionNs.Service
-      const session = yield* ssn.create({})
-      const msg = yield* createUserMessage(session.id, "hello")
-      const msgs = yield* ssn.messages({ sessionID: session.id })
-
-      const result = yield* SessionCompaction.use.process({
-        parentID: msg.id,
-        messages: msgs,
-        sessionID: session.id,
-        auto: true,
-      })
-
-      const all = yield* ssn.messages({ sessionID: session.id })
-      const last = all.at(-1)
-
-      expect(result).toBe("continue")
-      expect(last?.info.role).toBe("assistant")
-      expect(
-        all.some(
-          (msg) =>
-            msg.info.role === "user" &&
-            msg.parts.some(
-              (part) => part.type === "text" && part.synthetic && part.text.includes("Continue if you have next steps"),
-            ),
-        ),
-      ).toBe(false)
-    }).pipe(withCompaction({ plugin: autocontinue(false) })),
   )
 
   it.instance(

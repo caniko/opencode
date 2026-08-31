@@ -310,8 +310,8 @@ export interface Hooks {
    * Called after compaction succeeds and before a synthetic user
    * auto-continue message is added.
    *
-   * - `enabled`: Defaults to `true`. Set to `false` to skip the synthetic
-   *   user "continue" turn.
+   * - `enabled`: Defaults to whether the preceding user turn is unfinished.
+   *   Plugins may override it to request or suppress a synthetic continuation.
    */
   "experimental.compaction.autocontinue"?: (
     input: {

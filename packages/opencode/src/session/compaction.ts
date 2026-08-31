@@ -495,27 +495,42 @@ const layer = Layer.effect(
         }
 
         if (!replay) {
+          const previousUser = input.messages.findLast(
+            (message) =>
+              message.info.id !== input.parentID &&
+              message.info.role === "user" &&
+              !message.parts.some((part) => part.type === "compaction"),
+          )
+          const previousAssistant = previousUser
+            ? input.messages.findLast(
+                (message): message is SessionV1.WithParts & { info: SessionV1.Assistant } =>
+                  message.info.role === "assistant" && message.info.parentID === previousUser.info.id,
+              )
+            : undefined
+          const unfinished =
+            !previousAssistant ||
+            !previousAssistant.info.finish ||
+            ["tool-calls", "unknown"].includes(previousAssistant.info.finish)
           const info = yield* provider.getProvider(userMessage.model.providerID)
-          if (
-            (yield* plugin.trigger(
-              "experimental.compaction.autocontinue",
-              {
-                sessionID: input.sessionID,
-                agent: userMessage.agent,
-                model: yield* provider
-                  .getModel(userMessage.model.providerID, userMessage.model.modelID)
-                  .pipe(Effect.orDie),
-                provider: {
-                  source: info.source,
-                  info,
-                  options: info.options,
-                },
-                message: userMessage,
-                overflow: input.overflow === true,
+          const continuation = yield* plugin.trigger(
+            "experimental.compaction.autocontinue",
+            {
+              sessionID: input.sessionID,
+              agent: userMessage.agent,
+              model: yield* provider
+                .getModel(userMessage.model.providerID, userMessage.model.modelID)
+                .pipe(Effect.orDie),
+              provider: {
+                source: info.source,
+                info,
+                options: info.options,
               },
-              { enabled: true },
-            )).enabled
-          ) {
+              message: userMessage,
+              overflow: input.overflow === true,
+            },
+            { enabled: unfinished },
+          )
+          if (continuation.enabled) {
             const continueMsg = yield* session.updateMessage({
               id: MessageID.ascending(),
               role: "user",
