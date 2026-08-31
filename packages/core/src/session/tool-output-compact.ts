@@ -110,7 +110,7 @@ export const compact = Effect.fn("ToolOutputCompact.compact")(function* (opts: {
   const partUpdates = parts.flatMap((part) => {
     const next = boundPartData(part.data as Record<string, unknown>)
     if (!next.changed) return []
-    return [{ id: part.id, data: next.data }]
+    return [{ id: part.id, data: next.data as typeof part.data }]
   })
 
   const report: Report = {
@@ -134,6 +134,6 @@ export const compact = Effect.fn("ToolOutputCompact.compact")(function* (opts: {
     yield* db.update(PartTable).set({ data: row.data }).where(eq(PartTable.id, row.id)).run().pipe(Effect.orDie)
   }
   if (!opts.vacuum) return report
-  yield* db.run("VACUUM")
+  yield* db.run("VACUUM").pipe(Effect.orDie)
   return { ...report, vacuumed: true }
 })

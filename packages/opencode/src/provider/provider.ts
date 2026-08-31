@@ -53,7 +53,7 @@ async function gmiInterceptorFetch(url: RequestInfo | URL, init?: RequestInit): 
   const stream = new ReadableStream({
     async pull(ctrl) {
       while (true) {
-        let result: ReadableStreamReadResult<Uint8Array>
+        let result: Awaited<ReturnType<typeof reader.read>>
         try {
           result = await reader.read()
         } catch (err) {
