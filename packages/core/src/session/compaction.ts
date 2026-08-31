@@ -13,6 +13,16 @@ const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
+const SUMMARY_SECTIONS = [
+  { heading: "## Objective", content: true },
+  { heading: "## Important Details", content: true },
+  { heading: "## Work State", content: false },
+  { heading: "### Completed", content: true },
+  { heading: "### Active", content: true },
+  { heading: "### Blocked", content: true },
+  { heading: "## Next Move", content: true },
+  { heading: "## Relevant Files", content: true },
+] as const
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
 ## Objective
@@ -173,6 +183,33 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
   ].join("\n\n")
 }
 
+export const validateSummary = (summary: string) => {
+  const lines = summary.split(/\r?\n/).map((line) => line.trim())
+  const positions = SUMMARY_SECTIONS.map((section) =>
+    lines.flatMap((line, index) => (line === section.heading ? [index] : [])),
+  )
+  const headingCount = lines.filter((line) => /^#{2,3}\s/.test(line)).length
+  const structure =
+    headingCount === SUMMARY_SECTIONS.length &&
+    positions.every((matches) => matches.length === 1) &&
+    positions.every((matches, index) => index === 0 || matches[0] > positions[index - 1][0])
+  if (!structure) return { valid: false, reason: "structure" as const, headingCount, repeatedLineCount: 0 }
+
+  const complete = SUMMARY_SECTIONS.every((section, index) => {
+    if (!section.content) return true
+    const end = positions[index + 1]?.[0] ?? lines.length
+    return lines.slice(positions[index][0] + 1, end).some((line) => line && !line.startsWith("#"))
+  })
+  if (!complete) return { valid: false, reason: "empty-section" as const, headingCount, repeatedLineCount: 0 }
+
+  const counts = lines
+    .filter((line) => line.length >= 32 && !line.startsWith("#") && !/^[-\d.]\s*\(none\)$/i.test(line))
+    .reduce((result, line) => result.set(line, (result.get(line) ?? 0) + 1), new Map<string, number>())
+  const repeatedLineCount = [...counts.values()].filter((count) => count >= 3).length
+  if (repeatedLineCount) return { valid: false, reason: "repetition" as const, headingCount, repeatedLineCount }
+  return { valid: true, headingCount, repeatedLineCount }
+}
+
 export const make = (dependencies: Dependencies) => {
   const config = settings(dependencies.config)
   const compactAfterOverflow = Effect.fn("SessionCompaction.compactAfterOverflow")(function* (input: Input) {
@@ -218,7 +255,7 @@ export const make = (dependencies: Dependencies) => {
         Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
       )
     const summary = chunks.join("")
-    if (!summarized || failed || !summary.trim()) return false
+    if (!summarized || failed || !validateSummary(summary).valid) return false
     yield* dependencies.events.publish(SessionEvent.Compaction.Ended, {
       sessionID: input.sessionID,
       messageID,

@@ -20,8 +20,9 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { buildPrompt } from "@opencode-ai/core/session/compaction"
+import { buildPrompt, validateSummary } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
+import { NamedError } from "@opencode-ai/core/util/error"
 
 export const Event = SessionCompactionEvent
 
@@ -452,6 +453,19 @@ const layer = Layer.effect(
           message: replay
             ? "Conversation history too large to compact - exceeds model context limit"
             : "Session too large to compact - context exceeds model limit even after stripping media",
+        }).toObject()
+        processor.message.finish = "error"
+        yield* session.updateMessage(processor.message)
+        return "stop"
+      }
+
+      const summary = (yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)).find(
+        (message) => message.info.id === processor.message.id,
+      )
+      const validation = validateSummary(summary ? (summaryText(summary) ?? "") : "")
+      if (result === "continue" && !validation.valid) {
+        processor.message.error = new NamedError.Unknown({
+          message: `Compaction summary rejected: ${validation.reason}`,
         }).toObject()
         processor.message.finish = "error"
         yield* session.updateMessage(processor.message)

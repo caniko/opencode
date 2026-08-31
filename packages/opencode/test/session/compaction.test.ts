@@ -52,6 +52,28 @@ const usage = (input: ConstructorParameters<typeof Usage>[0]) => new Usage(input
 
 const basicUsage = () => usage({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
 
+const validSummary = (objective = "Preserve the current task") => `## Objective
+- ${objective}
+
+## Important Details
+- (none)
+
+## Work State
+### Completed
+- (none)
+
+### Active
+- (none)
+
+### Blocked
+- (none)
+
+## Next Move
+1. Continue the current task
+
+## Relevant Files
+- (none)`
+
 afterEach(() => {
   mock.restore()
 })
@@ -198,13 +220,24 @@ function fake(
   result: "continue" | "compact",
 ) {
   const msg = input.assistantMessage
+  const process = Effect.fn("TestSessionProcessor.process")(function* () {
+    if (result === "compact") return result
+    yield* SessionNs.use.updatePart({
+      id: PartID.ascending(),
+      messageID: msg.id,
+      sessionID: msg.sessionID,
+      type: "text",
+      text: validSummary(),
+    })
+    return result
+  }) as unknown as SessionProcessorModule.SessionProcessor.Handle["process"]
   return {
     get message() {
       return msg
     },
     updateToolCall: Effect.fn("TestSessionProcessor.updateToolCall")(() => Effect.succeed(undefined)),
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
-    process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),
+    process,
   } satisfies SessionProcessorModule.SessionProcessor.Handle
 }
 
@@ -904,6 +937,37 @@ describe("session.compaction.process", () => {
     }).pipe(withCompaction({ result: "compact" })),
   )
 
+  itCompaction.instance(
+    "rejects malformed summary output",
+    () => {
+      const stub = llm()
+      stub.push(reply("The task is still in progress."))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const messages = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages,
+          sessionID: session.id,
+          auto: false,
+        })
+        const summary = (yield* ssn.messages({ sessionID: session.id })).find(
+          (message) => message.info.role === "assistant" && message.info.summary,
+        )
+
+        expect(result).toBe("stop")
+        expect(summary?.info.role === "assistant" ? summary.info.finish : undefined).toBe("error")
+        expect(JSON.stringify(summary?.info.role === "assistant" ? summary.info.error : undefined)).toContain(
+          "Compaction summary rejected: structure",
+        )
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
   it.instance(
     "adds synthetic continue prompt for an unanswered user turn",
     Effect.gen(function* () {
@@ -1071,7 +1135,7 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      stub.push(reply(validSummary(), (input) => (captured = JSON.stringify(input.messages))))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -1098,7 +1162,7 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      stub.push(reply(validSummary(), (input) => (captured = JSON.stringify(input.messages))))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -1135,7 +1199,7 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      stub.push(reply(validSummary(), (input) => (captured = JSON.stringify(input.messages))))
       return Effect.gen(function* () {
         const test = yield* TestInstance
         const ssn = yield* SessionNs.Service
@@ -1425,7 +1489,7 @@ describe("session.compaction.process", () => {
       const stub = llm()
       let messages: LLM.StreamInput["messages"] = []
       stub.push(
-        reply("summary", (input) => {
+        reply(validSummary(), (input) => {
           messages = input.messages
         }),
       )
@@ -1474,9 +1538,9 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary one"))
+      stub.push(reply(validSummary("summary one")))
       stub.push(
-        reply("summary two", (input) => {
+        reply(validSummary("summary two"), (input) => {
           captured = JSON.stringify(input.messages)
         }),
       )
@@ -1519,7 +1583,7 @@ describe("session.compaction.process", () => {
       const stub = llm()
       let captured = ""
       stub.push(
-        reply("summary", (input) => {
+        reply(validSummary(), (input) => {
           captured = JSON.stringify(input.messages)
         }),
       )
@@ -1562,7 +1626,7 @@ describe("session.compaction.process", () => {
       const stub = llm()
       let captured: LLM.StreamInput["messages"] = []
       stub.push(
-        reply("summary two", (input) => {
+        reply(validSummary("summary two"), (input) => {
           captured = input.messages
         }),
       )
@@ -1644,8 +1708,8 @@ describe("session.compaction.process", () => {
 
   itCompaction.instance("keeps recent pre-compaction turns across repeated compactions", () => {
     const stub = llm()
-    stub.push(reply("summary one"))
-    stub.push(reply("summary two"))
+    stub.push(reply(validSummary("summary one")))
+    stub.push(reply(validSummary("summary two")))
 
     return Effect.gen(function* () {
       const ssn = yield* SessionNs.Service

@@ -71,6 +71,27 @@ let toolExecutionsStarted: Deferred.Deferred<void> | undefined
 let toolExecutionsReady = 5
 let activeToolExecutions = 0
 let maxActiveToolExecutions = 0
+const compactionSummary = (objective: string) => `## Objective
+- ${objective}
+
+## Important Details
+- (none)
+
+## Work State
+### Completed
+- (none)
+
+### Active
+- (none)
+
+### Blocked
+- (none)
+
+## Next Move
+1. Continue the current task
+
+## Relevant Files
+- (none)`
 const client = Layer.succeed(
   LLMClient.Service,
   LLMClient.Service.of({
@@ -1104,7 +1125,7 @@ describe("SessionRunnerLLM", () => {
       currentModel = compactModel
       requests.length = 0
       responses = [
-        fragmentFixture("text", "text-summary", ["## Objective\n- Preserve the task"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Preserve the task")]).completeEvents,
         fragmentFixture("text", "text-final", ["Continued"]).completeEvents,
       ]
       yield* session.prompt({
@@ -1129,20 +1150,20 @@ describe("SessionRunnerLLM", () => {
       expect(userTexts(requests[0])[0]).toContain("[Assistant]: VISIBLE_ASSISTANT_RESULT")
       expect(userTexts(requests[0])[0]).not.toContain("REASONING_SHOULD_NOT_SURVIVE_COMPACTION_7f93")
       expect(userTexts(requests[1])).toHaveLength(1)
-      expect(userTexts(requests[1])[0]).toContain("<summary>\n## Objective\n- Preserve the task\n</summary>")
+      expect(userTexts(requests[1])[0]).toContain("<summary>\n## Objective\n- Preserve the task")
       expect(userTexts(requests[1])[0]).toContain(`[User]: ${"Recent exact request ".repeat(180)}`)
 
       const context = yield* (yield* SessionStore.Service).context(sessionID)
       expect(context.map((message) => message.type)).toEqual(["compaction", "assistant"])
       expect(context[0]).toMatchObject({
         type: "compaction",
-        summary: "## Objective\n- Preserve the task",
+        summary: compactionSummary("Preserve the task"),
       })
 
       requests.length = 0
       executions.length = 0
       responses = [
-        fragmentFixture("text", "text-summary-2", ["## Objective\n- Preserve the updated task"]).completeEvents,
+        fragmentFixture("text", "text-summary-2", [compactionSummary("Preserve the updated task")]).completeEvents,
         fragmentFixture("text", "text-final-2", ["Continued again"]).completeEvents,
       ]
       yield* session.prompt({
@@ -1153,13 +1174,11 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(2)
-      expect(userTexts(requests[0])[0]).toContain(
-        "<prior-summary>\n## Objective\n- Preserve the task\n</prior-summary>",
-      )
+      expect(userTexts(requests[0])[0]).toContain("<prior-summary>\n## Objective\n- Preserve the task")
       expect(userTexts(requests[0])[0]).toContain("Recent exact request")
       expect((yield* (yield* SessionStore.Service).context(sessionID))[0]).toMatchObject({
         type: "compaction",
-        summary: "## Objective\n- Preserve the updated task",
+        summary: compactionSummary("Preserve the updated task"),
       })
     }),
   )
@@ -1177,7 +1196,7 @@ describe("SessionRunnerLLM", () => {
       currentModel = compactModel
       requests.length = 0
       responses = [
-        fragmentFixture("text", "text-summary", ["## Objective\n- Preserve the task"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Preserve the task")]).completeEvents,
         fragmentFixture("text", "text-final", ["Continued"]).completeEvents,
       ]
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: recent }), resume: false })
@@ -1208,7 +1227,7 @@ describe("SessionRunnerLLM", () => {
       currentModel = compactModel
       requests.length = 0
       responses = [
-        fragmentFixture("text", "text-summary", ["## Objective\n- Preserve the task"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Preserve the task")]).completeEvents,
         fragmentFixture("text", "text-final", ["Continued"]).completeEvents,
       ]
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: oversized }), resume: false })
@@ -1233,7 +1252,7 @@ describe("SessionRunnerLLM", () => {
           LLMEvent.stepStart({ index: 0 }),
           LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" }),
         ],
-        fragmentFixture("text", "text-summary", ["## Objective\n- Recover overflow"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Recover overflow")]).completeEvents,
         fragmentFixture("text", "text-final", ["Recovered"]).completeEvents,
       ]
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue" }), resume: false })
@@ -1241,9 +1260,9 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(3)
       expect(userTexts(requests[1])[0]).toContain("## Objective")
-      expect(userTexts(requests[2])[0]).toContain("<summary>\n## Objective\n- Recover overflow\n</summary>")
+      expect(userTexts(requests[2])[0]).toContain("<summary>\n## Objective\n- Recover overflow")
       expect(yield* session.context(sessionID)).toMatchObject([
-        { type: "compaction", summary: "## Objective\n- Recover overflow" },
+        { type: "compaction", summary: compactionSummary("Recover overflow") },
         { type: "assistant", finish: "stop" },
       ])
       yield* replaySessionProjection(sessionID)
@@ -1263,7 +1282,7 @@ describe("SessionRunnerLLM", () => {
       ]
       responses = [
         overflow(),
-        fragmentFixture("text", "text-summary", ["## Objective\n- Recover once"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Recover once")]).completeEvents,
         overflow(),
       ]
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue" }), resume: false })
@@ -1291,7 +1310,7 @@ describe("SessionRunnerLLM", () => {
         }),
       )
       responses = [
-        fragmentFixture("text", "text-summary", ["## Objective\n- Recover raw overflow"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Recover raw overflow")]).completeEvents,
         fragmentFixture("text", "text-final", ["Recovered"]).completeEvents,
       ]
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue" }), resume: false })
@@ -1299,7 +1318,7 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(3)
       expect(yield* session.context(sessionID)).toMatchObject([
-        { type: "compaction", summary: "## Objective\n- Recover raw overflow" },
+        { type: "compaction", summary: compactionSummary("Recover raw overflow") },
         { type: "assistant", finish: "stop" },
       ])
     }),
@@ -1325,12 +1344,33 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("publishes the original overflow when recovery summary is malformed", () =>
+    Effect.gen(function* () {
+      const session = yield* setupOverflowRecovery
+      responses = [
+        [LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" })],
+        fragmentFixture("text", "text-summary", ["The task is still in progress."]).completeEvents,
+      ]
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue" }), resume: false })
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      const context = yield* session.context(sessionID)
+      expect(context.some((message) => message.type === "compaction")).toBe(false)
+      expect(context.at(-1)).toMatchObject({
+        type: "assistant",
+        finish: "error",
+        error: { message: "prompt too long" },
+      })
+    }),
+  )
+
   it.effect("interrupts overflow recovery while the summary provider is running", () =>
     Effect.gen(function* () {
       const session = yield* setupOverflowRecovery
       responses = [
         [LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" })],
-        fragmentFixture("text", "text-summary", ["## Objective\n- Interrupted"]).completeEvents,
+        fragmentFixture("text", "text-summary", [compactionSummary("Interrupted")]).completeEvents,
       ]
       const firstGate = yield* Deferred.make<void>()
       const summaryGate = yield* Deferred.make<void>()
