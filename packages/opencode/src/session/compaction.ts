@@ -542,7 +542,8 @@ const layer = Layer.effect(
           const unfinished =
             !previousAssistant ||
             !previousAssistant.info.finish ||
-            ["tool-calls", "unknown"].includes(previousAssistant.info.finish)
+            ["tool-calls", "unknown"].includes(previousAssistant.info.finish) ||
+            MessageV2.hasActiveToolCalls(previousAssistant)
           const info = yield* provider.getProvider(userMessage.model.providerID)
           const continuation = yield* plugin.trigger(
             "experimental.compaction.autocontinue",

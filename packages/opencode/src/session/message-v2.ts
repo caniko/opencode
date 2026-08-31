@@ -518,6 +518,19 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
   }
 })
 
+export function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
+  // cleanup marks abandoned tool_use blocks this way after retries or aborts.
+  return part.state.status === "error" && part.state.metadata?.interrupted === true
+}
+
+export function hasActiveToolCalls(message: WithParts | undefined) {
+  return (
+    message?.parts.some(
+      (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+    ) ?? false
+  )
+}
+
 export function filterCompacted(msgs: Iterable<WithParts>) {
   const result = [] as WithParts[]
   const completed = new Set<string>()

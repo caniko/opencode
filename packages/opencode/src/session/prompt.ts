@@ -93,12 +93,6 @@ function formatMcpResourceBytes(value: number) {
   return `${Math.ceil(value / (1024 * 1024))} MB`
 }
 
-function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
-  // cleanup() marks abandoned tool_use blocks this way after retries/aborts.
-  // They are not pending work and must not trigger an assistant-prefill request.
-  return part.state.status === "error" && part.state.metadata?.interrupted === true
-}
-
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -1103,10 +1097,7 @@ const layer = Layer.effect(
           // Some providers return "stop" even when the assistant message contains
           // tool calls. Keep the loop running so tool results can be sent back to
           // the model, but ignore cleanup-marked interrupted orphans.
-          const hasToolCalls =
-            lastAssistantMsg?.parts.some(
-              (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
-            ) ?? false
+          const hasToolCalls = MessageV2.hasActiveToolCalls(lastAssistantMsg)
 
           if (
             lastAssistant?.finish &&
@@ -1115,7 +1106,7 @@ const layer = Layer.effect(
             lastAssistant.parentID === lastUser.id
           ) {
             const orphan = lastAssistantMsg?.parts.find(
-              (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
+              (part): part is SessionV1.ToolPart => part.type === "tool" && MessageV2.isOrphanedInterruptedTool(part),
             )
             if (orphan) {
               yield* Effect.logWarning("loop exit with orphaned interrupted tool", {

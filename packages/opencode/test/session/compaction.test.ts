@@ -1029,6 +1029,50 @@ describe("session.compaction.process", () => {
     }),
   )
 
+  it.instance(
+    "continues a stopped turn with active tool calls",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const user = yield* createUserMessage(session.id, "hello")
+      const assistant = yield* createAssistantMessage(session.id, user.id, test.directory)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "tool",
+        callID: "read-call",
+        tool: "read",
+        state: {
+          status: "completed",
+          input: { filePath: "src/index.ts" },
+          output: "file contents",
+          title: "src/index.ts",
+          metadata: {},
+          time: { start: Date.now(), end: Date.now() },
+        },
+      })
+      yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: true })
+      const messages = yield* ssn.messages({ sessionID: session.id })
+
+      yield* SessionCompaction.use.process({
+        parentID: messages.at(-1)!.info.id,
+        messages,
+        sessionID: session.id,
+        auto: true,
+      })
+
+      expect(
+        (yield* ssn.messages({ sessionID: session.id })).some(
+          (message) =>
+            message.info.role === "user" &&
+            message.parts.some((part) => part.type === "text" && part.metadata?.compaction_continue === true),
+        ),
+      ).toBe(true)
+    }),
+  )
+
   itCompaction.instance(
     "allows plugins to override synthetic continuation",
     Effect.gen(function* () {
