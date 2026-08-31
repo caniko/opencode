@@ -13,6 +13,7 @@ import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixtur
 import type { Permission } from "../../src/permission"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -1304,6 +1305,8 @@ describe("tool.shell truncation", () => {
         expect(lines.length).toBe(lineCount)
         expect(lines[0]).toBe("1")
         expect(lines[lineCount - 1]).toBe(String(lineCount))
+        expect(result.metadata.bytes).toBe(Buffer.byteLength(saved, "utf-8"))
+        expect(result.metadata.digest).toBe(Hash.sha256(saved))
       }),
     ),
   )

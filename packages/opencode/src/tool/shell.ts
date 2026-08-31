@@ -1,5 +1,6 @@
 import { Clock, Effect, Stream } from "effect"
 import os from "os"
+import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
 import path from "path"
@@ -455,6 +456,8 @@ export const ShellTool = Tool.define(
       let last = ""
       const list: Chunk[] = []
       let used = 0
+      let total = 0
+      const hash = createHash("sha256")
       let file = ""
       let sink: ReturnType<typeof createWriteStream> | undefined
       let cut = false
@@ -511,6 +514,8 @@ export const ShellTool = Tool.define(
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
               const size = Buffer.byteLength(chunk, "utf-8")
+              hash.update(chunk)
+              total += size
               list.push({ text: chunk, size })
               used += size
               while (used > keep && list.length > 1) {
@@ -605,7 +610,8 @@ export const ShellTool = Tool.define(
           output: last || preview(output),
           exit: code,
           truncated: cut,
-          ...(cut && file ? { outputPath: file } : {}),
+          bytes: total,
+          ...(cut && file ? { outputPath: file, digest: hash.digest("hex") } : {}),
         },
         output,
       }

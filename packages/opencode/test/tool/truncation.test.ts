@@ -5,6 +5,7 @@ import { filesystem } from "@opencode-ai/core/effect/app-node-platform"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect, FileSystem } from "effect"
 import { Truncate } from "@/tool/truncate"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { Config } from "@/config/config"
 import { Identifier } from "../../src/id/id"
 import { Process } from "@/util/process"
@@ -189,6 +190,8 @@ describe("Truncate", () => {
         const fsys = yield* FSUtil.Service
         const written = yield* fsys.readFileString(result.outputPath!)
         expect(written).toBe(lines)
+        expect(result.bytes).toBe(Buffer.byteLength(lines, "utf-8"))
+        expect(result.digest).toBe(Hash.sha256(lines))
       }),
     )
 

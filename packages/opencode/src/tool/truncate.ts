@@ -6,6 +6,7 @@ import type { Agent } from "../agent/agent"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { evaluate } from "@/permission/evaluate"
 import { Config } from "@/config/config"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { ToolID } from "./schema"
 import { TRUNCATION_DIR } from "./truncation-dir"
 
@@ -16,7 +17,9 @@ export const MAX_BYTES = 50 * 1024
 export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
-export type Result = { content: string; truncated: false } | { content: string; truncated: true; outputPath: string }
+export type Result =
+  | { content: string; truncated: false }
+  | { content: string; truncated: true; outputPath: string; bytes: number; digest: string }
 
 export interface Options {
   maxLines?: number
@@ -137,6 +140,8 @@ const layer = Layer.effect(
             : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`,
         truncated: true,
         outputPath: file,
+        bytes: totalBytes,
+        digest: Hash.sha256(text),
       } as const
     })
 

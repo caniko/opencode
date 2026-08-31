@@ -164,7 +164,11 @@ const layer = Layer.effect(
                   metadata: {
                     ...metadata,
                     truncated: out.truncated,
-                    ...(out.truncated && { outputPath: out.outputPath }),
+                    ...(out.truncated && {
+                      outputPath: out.outputPath,
+                      bytes: out.bytes,
+                      digest: out.digest,
+                    }),
                   },
                 }
               }).pipe(
