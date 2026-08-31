@@ -66,7 +66,7 @@ const serialize = (message: SessionV1.WithParts) => {
   return message.parts
     .flatMap((part) => {
       if (part.type === "text") return part.text ? [`[Assistant]: ${part.text}`] : []
-      if (part.type === "reasoning") return part.text ? [`[Assistant reasoning]: ${part.text}`] : []
+      if (part.type === "reasoning") return []
       if (part.type !== "tool") return []
       const call = `[Assistant tool call]: ${part.tool}(${JSON.stringify(part.state.input)})`
       if (part.state.status === "completed") {

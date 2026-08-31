@@ -1530,6 +1530,21 @@ describe("session.compaction.process", () => {
           id: PartID.ascending(),
           messageID: kept.id,
           sessionID: session.id,
+          type: "text",
+          text: "visible assistant result",
+        })
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: kept.id,
+          sessionID: session.id,
+          type: "reasoning",
+          text: "REASONING_SHOULD_NOT_SURVIVE_COMPACTION_7f93",
+          time: { start: Date.now(), end: Date.now() },
+        })
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: kept.id,
+          sessionID: session.id,
           type: "tool",
           callID: "read-call",
           tool: "read",
@@ -1569,8 +1584,11 @@ describe("session.compaction.process", () => {
 
         expect(captured).toHaveLength(1)
         expect(captured[0]?.role).toBe("user")
+        expect(JSON.stringify(captured)).toContain("[Assistant]: visible assistant result")
         expect(JSON.stringify(captured)).toContain('[Assistant tool call]: read({\\"filePath\\":\\"src/index.ts\\"})')
         expect(JSON.stringify(captured)).toContain("[Tool result]: file contents")
+        expect(JSON.stringify(captured)).not.toContain("REASONING_SHOULD_NOT_SURVIVE_COMPACTION_7f93")
+        expect(JSON.stringify(captured)).not.toContain("[Assistant reasoning]")
         expect(JSON.stringify(captured)).not.toContain('\\"role\\":\\"assistant\\"')
       }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 0 }) }))
     },

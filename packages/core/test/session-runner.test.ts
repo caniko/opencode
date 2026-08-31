@@ -1079,7 +1079,21 @@ describe("SessionRunnerLLM", () => {
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
-      response = fragmentFixture("text", "text-first", ["Earlier answer"]).completeEvents
+      const visible = "VISIBLE_ASSISTANT_RESULT ".repeat(200)
+      response = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.reasoningStart({ id: "reasoning-first" }),
+        LLMEvent.reasoningDelta({
+          id: "reasoning-first",
+          text: "REASONING_SHOULD_NOT_SURVIVE_COMPACTION_7f93",
+        }),
+        LLMEvent.reasoningEnd({ id: "reasoning-first" }),
+        LLMEvent.textStart({ id: "text-first" }),
+        LLMEvent.textDelta({ id: "text-first", text: visible }),
+        LLMEvent.textEnd({ id: "text-first" }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
       yield* session.prompt({
         sessionID,
         prompt: Prompt.make({ text: "Earlier question ".repeat(180) }),
@@ -1112,6 +1126,8 @@ describe("SessionRunnerLLM", () => {
         },
       ])
       expect(userTexts(requests[0])[0]).toContain("## Objective")
+      expect(userTexts(requests[0])[0]).toContain("[Assistant]: VISIBLE_ASSISTANT_RESULT")
+      expect(userTexts(requests[0])[0]).not.toContain("REASONING_SHOULD_NOT_SURVIVE_COMPACTION_7f93")
       expect(userTexts(requests[1])).toHaveLength(1)
       expect(userTexts(requests[1])[0]).toContain("<summary>\n## Objective\n- Preserve the task\n</summary>")
       expect(userTexts(requests[1])[0]).toContain(`[User]: ${"Recent exact request ".repeat(180)}`)
