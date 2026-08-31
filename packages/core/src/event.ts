@@ -121,14 +121,25 @@ export interface PublishOptions {
   readonly location?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
+  /**
+   * Run projectors and notify live subscribers without appending an event row.
+   * Replaceable projection state, not an append-only history entry.
+   */
+  readonly ephemeral?: boolean
 }
 
+export type Publish = <D extends Definition>(
+  definition: D,
+  data: Data<D>,
+  options?: PublishOptions,
+) => Effect.Effect<Payload<D>>
+
 export interface Interface {
-  readonly publish: <D extends Definition>(
-    definition: D,
-    data: Data<D>,
-    options?: PublishOptions,
-  ) => Effect.Effect<Payload<D>>
+  readonly publish: Publish
+  /** Persist a durable event. Dies if the definition is not durable. */
+  readonly publishDurable: Publish
+  /** Notify and project without appending a durable event row. */
+  readonly publishEphemeral: Publish
   readonly subscribe: <D extends Definition>(definition: D) => Stream.Stream<Payload<D>>
   readonly all: () => Stream.Stream<Payload>
   readonly durable: (input: { readonly aggregateID: string; readonly after?: number }) => Stream.Stream<Payload>
@@ -366,17 +377,30 @@ export const layerWith = (options?: LayerOptions) =>
         })
       }
 
-      function publishEvent<D extends Definition>(definition: D, event: Payload<D>, commit?: PublishOptions["commit"]) {
+      function projectLive(event: Payload) {
+        return Effect.forEach(projectors.get(event.type) ?? [], (projector) => projector(event), { discard: true })
+      }
+
+      function publishEvent<D extends Definition>(
+        definition: D,
+        event: Payload<D>,
+        options?: { readonly commit?: PublishOptions["commit"]; readonly ephemeral?: boolean },
+      ) {
         return Effect.gen(function* () {
-          if (!definition?.durable && commit)
+          if (options?.commit && (options.ephemeral || !definition?.durable))
             return yield* Effect.die(
               new InvalidDurableEventError({
                 type: event.type,
                 message: "Local commit hooks require a durable event",
               }),
             )
+          if (options?.ephemeral) {
+            yield* projectLive(event as Payload)
+            yield* notify(event as Payload, false)
+            return event
+          }
           if (definition?.durable) {
-            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit)
+            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, options?.commit)
             if (committed) {
               event = {
                 ...event,
@@ -433,10 +457,25 @@ export const layerWith = (options?: LayerOptions) =>
               ...(location ? { location } : {}),
               data,
             } as Payload<D>,
-            options?.commit,
+            { commit: options?.commit, ephemeral: options?.ephemeral },
           )
         })
       }
+
+      const publishDurable: Publish = (definition, data, options) =>
+        Effect.gen(function* () {
+          if (!definition.durable)
+            return yield* Effect.die(
+              new InvalidDurableEventError({
+                type: definition.type,
+                message: "publishDurable requires a durable event definition",
+              }),
+            )
+          return yield* publish(definition, data, options ? { ...options, ephemeral: false } : options)
+        })
+
+      const publishEphemeral: Publish = (definition, data, options) =>
+        publish(definition, data, options ? { ...options, ephemeral: true } : { ephemeral: true })
 
       function replay(
         event: SerializedEvent,
@@ -621,6 +660,8 @@ export const layerWith = (options?: LayerOptions) =>
 
       return Service.of({
         publish,
+        publishDurable,
+        publishEphemeral,
         subscribe,
         all: streamAll,
         durable,

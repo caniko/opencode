@@ -14,18 +14,19 @@ const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
 
 const capture = () => {
   const published: Array<{ readonly type: string; readonly data: unknown }> = []
+  const publish: EventV2.Publish = (definition, data) =>
+    Effect.sync(() => {
+      const event = { id: EventV2.ID.create(), type: definition.type, data } as EventV2.Payload<typeof definition>
+      published.push({
+        type: definition.durable ? EventV2.versionedType(definition.type, definition.durable.version) : definition.type,
+        data,
+      })
+      return event
+    })
   const events = EventV2.Service.of({
-    publish: (definition, data) =>
-      Effect.sync(() => {
-        const event = { id: EventV2.ID.create(), type: definition.type, data } as EventV2.Payload<typeof definition>
-        published.push({
-          type: definition.durable
-            ? EventV2.versionedType(definition.type, definition.durable.version)
-            : definition.type,
-          data,
-        })
-        return event
-      }),
+    publish,
+    publishDurable: publish,
+    publishEphemeral: publish,
     subscribe: () => Stream.empty,
     all: () => Stream.empty,
     durable: () => Stream.empty,

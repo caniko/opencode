@@ -282,4 +282,110 @@ describe("Session", () => {
       expect(saved.metadata).toBeUndefined()
     }),
   )
+
+  it.instance("does not persist mid-run tool snapshots", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const events = yield* EventV2Bridge.Service
+      const created = yield* Effect.acquireRelease(session.create({}), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: created.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "user",
+        model: { providerID: "test", modelID: "test" },
+      } as SessionV1.User)
+      const partID = PartID.ascending()
+      const live: Array<{ durable: boolean; status: string }> = []
+      const unsub = yield* events.listen((event) => {
+        if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
+        const part = (event.data as typeof SessionV1.Event.PartUpdated.data.Type).part
+        if (part.id !== partID || part.type !== "tool") return Effect.void
+        live.push({ durable: event.durable !== undefined, status: part.state.status })
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => unsub)
+      const running = (output: string) => ({
+        id: partID,
+        messageID,
+        sessionID: created.id,
+        type: "tool" as const,
+        callID: "call_bash",
+        tool: "bash",
+        state: {
+          status: "running" as const,
+          input: { command: "echo" },
+          metadata: { output },
+          time: { start: 1 },
+        },
+      })
+
+      yield* session.updatePart(running("start"))
+      yield* session.updatePart(running("start\nmore"))
+      yield* session.updatePart(running("start\nmore\nlots"))
+      yield* session.updatePart({
+        ...running("done"),
+        state: {
+          status: "completed" as const,
+          input: { command: "echo" },
+          output: "done",
+          title: "bash",
+          metadata: { output: "done" },
+          time: { start: 1, end: 2 },
+        },
+      })
+
+      expect(live).toEqual([
+        { durable: true, status: "running" },
+        { durable: false, status: "running" },
+        { durable: false, status: "running" },
+        { durable: true, status: "completed" },
+      ])
+    }),
+  )
+
+  it.instance("bounds projected running tool output", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({}), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: created.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "user",
+        model: { providerID: "test", modelID: "test" },
+      } as SessionV1.User)
+      const partID = PartID.ascending()
+      const output = "x".repeat(30_001)
+      yield* session.updatePart({
+        id: partID,
+        messageID,
+        sessionID: created.id,
+        type: "tool",
+        callID: "call_bash",
+        tool: "bash",
+        state: {
+          status: "running",
+          input: { command: "echo" },
+          metadata: { output },
+          time: { start: 1 },
+        },
+      })
+
+      const stored = yield* session.getPart({ sessionID: created.id, messageID, partID })
+      expect(stored?.type).toBe("tool")
+      if (stored?.type !== "tool") return
+      expect(stored.state.status).toBe("running")
+      if (stored.state.status !== "running") return
+      expect(stored.state.metadata?.output).toBe("...\n\n" + output.slice(-30_000))
+    }),
+  )
 })

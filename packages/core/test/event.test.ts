@@ -518,6 +518,52 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("publishEphemeral notifies without inserting a durable row", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = EventV2.ID.create()
+      const fiber = yield* events.subscribe(SyncMessage).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+      const event = yield* events.publishEphemeral(SyncMessage, { id: aggregateID, text: "live" })
+      const received = Array.from(yield* Fiber.join(fiber))
+
+      expect(received).toEqual([event])
+      expect(event.durable).toBeUndefined()
+      expect(
+        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all().pipe(Effect.orDie),
+      ).toEqual([])
+    }),
+  )
+
+  it.effect("publishEphemeral still runs projectors", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const projected = yield* Deferred.make<string>()
+      yield* events.project(SyncMessage, (event) => Deferred.succeed(projected, event.data.text))
+      yield* events.publishEphemeral(SyncMessage, { id: "one", text: "projected" })
+      expect(yield* Deferred.await(projected)).toBe("projected")
+    }),
+  )
+
+  it.effect("publishDurable dies when the definition is live-only", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const exit = yield* events.publishDurable(Message, { text: "nope" }).pipe(Effect.exit)
+      expect(String(exit)).toContain("publishDurable requires a durable event definition")
+    }),
+  )
+
+  it.effect("rejects local commit hooks on ephemeral publishes", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const exit = yield* events
+        .publishEphemeral(SyncMessage, { id: "one", text: "hello" }, { commit: () => Effect.void })
+        .pipe(Effect.exit)
+      expect(String(exit)).toContain("Local commit hooks require a durable event")
+    }),
+  )
+
   it.effect("uses custom sync aggregate field", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service

@@ -47,6 +47,37 @@ import { SessionMessage } from "@opencode-ai/schema/session-message"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
+const TOOL_OUTPUT_PREVIEW_CHARS = 30_000
+
+function toolOutputPreview(text: string) {
+  if (text.length <= TOOL_OUTPUT_PREVIEW_CHARS) return text
+  return "...\n\n" + text.slice(-TOOL_OUTPUT_PREVIEW_CHARS)
+}
+
+function boundToolPart<T extends SessionV1.Part>(part: T): T {
+  if (part.type !== "tool") return part
+  if (part.state.status === "pending") return part
+  const output = part.state.metadata?.output
+  if (typeof output !== "string") return part
+  const preview = toolOutputPreview(output)
+  if (preview === output) return part
+  return {
+    ...part,
+    state: {
+      ...part.state,
+      metadata: { ...part.state.metadata, output: preview },
+    },
+  }
+}
+
+function isRunningToolProgress(part: SessionV1.Part, existing: SessionV1.Part | undefined) {
+  return (
+    part.type === "tool" &&
+    part.state.status === "running" &&
+    existing?.type === "tool" &&
+    existing.state.status === "running"
+  )
+}
 
 export function isDefaultTitle(title: string) {
   return new RegExp(
@@ -634,11 +665,17 @@ const layer: Layer.Layer<
 
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* events.publish(SessionV1.Event.PartUpdated, {
+        const existing = yield* getPart({ sessionID: part.sessionID, messageID: part.messageID, partID: part.id })
+        const payload = {
           sessionID: part.sessionID,
-          part: structuredClone(part),
+          part: structuredClone(boundToolPart(part)),
           time: Date.now(),
-        })
+        }
+        if (isRunningToolProgress(part, existing)) {
+          yield* events.publishEphemeral(SessionV1.Event.PartUpdated, payload)
+          return part
+        }
+        yield* events.publishDurable(SessionV1.Event.PartUpdated, payload)
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
 
