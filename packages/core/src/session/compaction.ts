@@ -255,7 +255,25 @@ export const make = (dependencies: Dependencies) => {
         Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
       )
     const summary = chunks.join("")
-    if (!summarized || failed || !validateSummary(summary).valid) return false
+    if (!summarized || failed) return false
+    const validation = validateSummary(summary)
+    const diagnostics = {
+      pipeline: "v2",
+      sessionID: input.sessionID,
+      messageID,
+      inputEntries: input.entries.length,
+      priorCompactions: input.entries.filter((entry) => entry.message.type === "compaction").length,
+      summaryInputCharacters: selected.head.length,
+      retainedCharacters: selected.recent.length,
+      summaryCharacters: summary.length,
+      headingCount: validation.headingCount,
+      repeatedLineCount: validation.repeatedLineCount,
+    }
+    if (!validation.valid) {
+      yield* Effect.logWarning("compaction summary rejected", { ...diagnostics, reason: validation.reason })
+      return false
+    }
+    yield* Effect.logInfo("compaction summary accepted", diagnostics)
     yield* dependencies.events.publish(SessionEvent.Compaction.Ended, {
       sessionID: input.sessionID,
       messageID,

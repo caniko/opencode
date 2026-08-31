@@ -365,8 +365,9 @@ const layer = Layer.effect(
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
+      const visible = history.filter((_, index) => !hidden.has(index))
       const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
+        messages: visible,
         cfg,
         model,
       })
@@ -462,8 +463,24 @@ const layer = Layer.effect(
       const summary = (yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)).find(
         (message) => message.info.id === processor.message.id,
       )
-      const validation = validateSummary(summary ? (summaryText(summary) ?? "") : "")
+      const text = summary ? (summaryText(summary) ?? "") : ""
+      const validation = validateSummary(text)
+      const diagnostics = {
+        pipeline: "v1",
+        "session.id": input.sessionID,
+        messageID: processor.message.id,
+        auto: input.auto,
+        overflow: input.overflow === true,
+        inputMessages: visible.length,
+        priorCompactions: prior.length,
+        summaryInputMessages: selected.head.length,
+        retainedMessages: visible.length - selected.head.length,
+        summaryCharacters: text.length,
+        headingCount: validation.headingCount,
+        repeatedLineCount: validation.repeatedLineCount,
+      }
       if (result === "continue" && !validation.valid) {
+        yield* Effect.logWarning("compaction summary rejected", { ...diagnostics, reason: validation.reason })
         processor.message.error = new NamedError.Unknown({
           message: `Compaction summary rejected: ${validation.reason}`,
         }).toObject()
@@ -471,6 +488,7 @@ const layer = Layer.effect(
         yield* session.updateMessage(processor.message)
         return "stop"
       }
+      if (result === "continue") yield* Effect.logInfo("compaction summary accepted", diagnostics)
 
       if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
         yield* session.updatePart({
