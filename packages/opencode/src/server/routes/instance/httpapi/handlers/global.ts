@@ -5,6 +5,12 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { Database } from "@opencode-ai/core/database/database"
+import { ProcessGovernor } from "@opencode-ai/core/process-governor"
+import { InstanceStore } from "@/project/instance-store"
+import { SessionCompaction } from "@opencode-ai/core/session/compaction"
+import { sql } from "drizzle-orm"
+import { stat } from "node:fs/promises"
 import { Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerResponse } from "effect/unstable/http"
@@ -12,6 +18,8 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
 import { GlobalUpgradeInput } from "../groups/global"
+
+let attachedSessions = 0
 
 function eventData(data: unknown): Sse.Event {
   return {
@@ -24,7 +32,7 @@ function eventData(data: unknown): Sse.Event {
 
 function eventResponse() {
   return Effect.gen(function* () {
-    yield* Effect.logInfo("global event connected")
+    let attached = false
     const events = Stream.callback<GlobalBusEvent>((queue) => {
       const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
       return Effect.acquireRelease(
@@ -39,11 +47,23 @@ function eventResponse() {
 
     return HttpServerResponse.stream(
       Stream.make({ payload: { id: EventV2.ID.create(), type: "server.connected", properties: {} } }).pipe(
+        Stream.tap(() =>
+          Effect.sync(() => {
+            attached = true
+            attachedSessions++
+          }).pipe(Effect.andThen(Effect.logInfo("global event connected"))),
+        ),
         Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
         Stream.map(eventData),
         Stream.pipeThroughChannel(Sse.encode()),
         Stream.encodeText,
-        Stream.ensuring(Effect.logInfo("global event disconnected")),
+        Stream.ensuring(
+          Effect.sync(() => {
+            if (!attached) return
+            attached = false
+            attachedSessions--
+          }).pipe(Effect.andThen(Effect.logInfo("global event disconnected"))),
+        ),
       ),
       {
         contentType: "text/event-stream",
@@ -61,10 +81,53 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
   Effect.gen(function* () {
     const config = yield* Config.Service
     const installation = yield* Installation.Service
+    const database = yield* Database.Service
+    const instances = yield* InstanceStore.Service
     const bridge = yield* EffectBridge.make()
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
-      return { healthy: true as const, version: InstallationVersion }
+      const counts = yield* database.db
+        .get<{ sessions: number; messages: number; parts: number; events: number }>(
+          sql`
+          SELECT
+            (SELECT count(*) FROM session) AS sessions,
+            (SELECT count(*) FROM message) + (SELECT count(*) FROM session_message) AS messages,
+            (SELECT count(*) FROM part) AS parts,
+            (SELECT count(*) FROM event) AS events
+        `,
+        )
+        .pipe(Effect.orDie)
+      const databasePath = Database.path()
+      const bytes =
+        databasePath === ":memory:"
+          ? 0
+          : yield* Effect.promise(() =>
+              Promise.all(
+                [databasePath, `${databasePath}-wal`].map((file) =>
+                  stat(file).then(
+                    (info) => info.size,
+                    () => 0,
+                  ),
+                ),
+              ).then((sizes) => sizes.reduce((total, size) => total + size, 0)),
+            )
+      return {
+        healthy: true as const,
+        version: InstallationVersion,
+        runtime: {
+          attachedSessions,
+          ...(yield* instances.status()),
+          tools: yield* ProcessGovernor.status().pipe(Effect.orDie),
+          rejectedCompactions: SessionCompaction.rejectedCount(),
+          database: {
+            bytes,
+            sessions: counts?.sessions ?? 0,
+            messages: counts?.messages ?? 0,
+            parts: counts?.parts ?? 0,
+            events: counts?.events ?? 0,
+          },
+        },
+      }
     })
 
     const event = Effect.fn("GlobalHttpApi.event")(function* () {

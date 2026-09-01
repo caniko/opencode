@@ -146,53 +146,55 @@ const layer = Layer.effect(
       const collect = Effect.scoped(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(command)
-          if (options?.combineOutput) {
-            const [output, exitCode] = yield* Effect.all(
-              [collectStream(handle.all, options.maxOutputBytes), handle.exitCode],
-              { concurrency: "unbounded" },
-            )
-            return {
-              command: description,
-              exitCode,
-              output: output.buffer,
-              stdout: Buffer.alloc(0),
-              stderr: Buffer.alloc(0),
-              outputTruncated: output.truncated,
-              stdoutTruncated: false,
-              stderrTruncated: false,
-            } satisfies RunResult
-          }
-          const [stdout, stderr, exitCode] = yield* Effect.all(
-            [
-              collectStream(handle.stdout, options?.maxOutputBytes),
-              collectStream(handle.stderr, options?.maxErrorBytes),
-              handle.exitCode,
-            ],
-            { concurrency: "unbounded" },
-          )
-          return {
-            command: description,
-            exitCode,
-            stdout: stdout.buffer,
-            stderr: stderr.buffer,
-            stdoutTruncated: stdout.truncated,
-            stderrTruncated: stderr.truncated,
-          } satisfies RunResult
-        }),
-      )
-      const timed = options?.timeout
-        ? Effect.timeoutOrElse(collect, {
+          const read = options?.combineOutput
+            ? Effect.gen(function* () {
+                const [output, exitCode] = yield* Effect.all(
+                  [collectStream(handle.all, options.maxOutputBytes), handle.exitCode],
+                  { concurrency: "unbounded" },
+                )
+                return {
+                  command: description,
+                  exitCode,
+                  output: output.buffer,
+                  stdout: Buffer.alloc(0),
+                  stderr: Buffer.alloc(0),
+                  outputTruncated: output.truncated,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                } satisfies RunResult
+              })
+            : Effect.gen(function* () {
+                const [stdout, stderr, exitCode] = yield* Effect.all(
+                  [
+                    collectStream(handle.stdout, options?.maxOutputBytes),
+                    collectStream(handle.stderr, options?.maxErrorBytes),
+                    handle.exitCode,
+                  ],
+                  { concurrency: "unbounded" },
+                )
+                return {
+                  command: description,
+                  exitCode,
+                  stdout: stdout.buffer,
+                  stderr: stderr.buffer,
+                  stdoutTruncated: stdout.truncated,
+                  stderrTruncated: stderr.truncated,
+                } satisfies RunResult
+              })
+          if (!options?.timeout) return yield* read
+          return yield* Effect.timeoutOrElse(read, {
             duration: options.timeout,
             orElse: () => Effect.fail(new AppProcessError({ command: description, cause: new Error("Timed out") })),
           })
-        : collect
+        }),
+      )
       const aborted = options?.signal
-        ? timed.pipe(
+        ? collect.pipe(
             Effect.raceFirst(
               waitForAbort(options.signal).pipe(Effect.mapError((cause) => wrapError(description, cause))),
             ),
           )
-        : timed
+        : collect
       return aborted.pipe(Effect.catch((cause) => Effect.fail(wrapError(description, cause))))
     }
 

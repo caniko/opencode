@@ -1845,6 +1845,63 @@ unix(
 )
 
 unixNoLLMServer(
+  "interrupt kills command ! expansion",
+  () =>
+    withSh(() =>
+      Effect.gen(function* () {
+        const { directory: dir } = yield* TestInstance
+        const afs = yield* FSUtil.Service
+        const ready = path.join(dir, ".command-ready")
+        const pidFile = path.join(dir, ".command-pid")
+        yield* writeConfig(dir, {
+          ...cfg,
+          shell: "/bin/sh",
+          command: {
+            probe: {
+              template: `Probe: !\`printf %s $$ > ${JSON.stringify(pidFile)}; touch ${JSON.stringify(ready)}; sleep 30\``,
+            },
+          },
+        })
+
+        const { prompt, chat } = yield* boot()
+        const fiber = yield* prompt
+          .command({ sessionID: chat.id, command: "probe", arguments: "" })
+          .pipe(Effect.forkChild)
+        yield* pollWithTimeout(
+          afs.existsSafe(ready).pipe(Effect.map((exists) => (exists ? (true as const) : undefined))),
+          "command expansion never created readiness marker",
+        )
+
+        const pid = Number(yield* afs.readFileStringSafe(pidFile))
+        expect(pid).toBeGreaterThan(0)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-pid, "SIGKILL")
+            } catch {}
+            try {
+              process.kill(pid, "SIGKILL")
+            } catch {}
+          }),
+        )
+        yield* Fiber.interrupt(fiber)
+
+        const alive = yield* Effect.sync(() => {
+          try {
+            process.kill(pid, 0)
+            return true
+          } catch {
+            return false
+          }
+        })
+        expect(alive).toBe(false)
+      }),
+    ),
+  { config: cfg },
+  30_000,
+)
+
+unixNoLLMServer(
   "cancel interrupts shell and resolves cleanly",
   () =>
     withSh(() =>

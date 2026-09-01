@@ -4,7 +4,7 @@ import fs from "fs/promises"
 import path from "path"
 import yargs from "yargs"
 import { tmpdir } from "../../fixture/fixture"
-import { TuiThreadCommand, resolveThreadDirectory } from "../../../src/cli/cmd/tui"
+import { managedAttachUrl, TuiThreadCommand, resolveThreadDirectory } from "../../../src/cli/cmd/tui"
 import { cliIt } from "../../lib/cli-process"
 
 describe("tui thread", () => {
@@ -51,6 +51,12 @@ describe("tui thread", () => {
     expect(resolveThreadDirectory(undefined, pwd.path, cwd.path)).toBe(cwd.path)
   })
 
+  test("uses the managed server unless direct mode is explicit", () => {
+    expect(managedAttachUrl({ OPENCODE_ATTACH_URL: "http://127.0.0.1:4096" })).toBe("http://127.0.0.1:4096")
+    expect(managedAttachUrl({ OPENCODE_ATTACH_URL: "http://127.0.0.1:4096", OPENCODE_DIRECT: "1" })).toBeUndefined()
+    expect(managedAttachUrl({ OPENCODE_ATTACH_URL: "http://127.0.0.1:4096", OPENCODE_DIRECT: "TRUE" })).toBeUndefined()
+  })
+
   test("parses supported --no-replay forms", async () => {
     for (const option of ["--no-replay", "--no-replay=true", "--noReplay"]) {
       const args = await yargs([])
@@ -87,6 +93,24 @@ describe("tui thread", () => {
 
       opencode.expectExit(result, 1)
       expect(result.stderr).toContain("--mini requires a TTY stdout")
+    }),
+  )
+
+  cliIt.live("uses managed attachment unless direct mode is explicit", ({ opencode }) =>
+    Effect.gen(function* () {
+      const session = "ses_206f84f18ffeZ6hhD7pFYAiW5T"
+      const managed = yield* opencode.spawn(["--session", session], {
+        env: { OPENCODE_ATTACH_URL: "http://127.0.0.1:1" },
+      })
+      const direct = yield* opencode.spawn(["--session", session], {
+        env: { OPENCODE_ATTACH_URL: "http://127.0.0.1:1", OPENCODE_DIRECT: "1" },
+      })
+
+      opencode.expectExit(managed, 1)
+      opencode.expectExit(direct, 1)
+      expect(managed.stderr).not.toContain("Session not found")
+      expect(managed.stderr).not.toContain("react/jsx-dev-runtime")
+      expect(direct.stderr).toMatch(/Session not found|react\/jsx-dev-runtime/)
     }),
   )
 

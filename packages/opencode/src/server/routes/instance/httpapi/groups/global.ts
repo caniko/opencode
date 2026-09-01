@@ -12,6 +12,22 @@ import { described } from "./metadata"
 const GlobalHealth = Schema.Struct({
   healthy: Schema.Literal(true),
   version: Schema.String,
+  runtime: Schema.Struct({
+    attachedSessions: Schema.Number,
+    loadedInstances: Schema.Number,
+    tools: Schema.Struct({
+      ordinary: Schema.Struct({ queued: Schema.Number, running: Schema.Number, limit: Schema.Number }),
+      heavy: Schema.Struct({ queued: Schema.Number, running: Schema.Number, limit: Schema.Number }),
+    }),
+    rejectedCompactions: Schema.Number,
+    database: Schema.Struct({
+      bytes: Schema.Number,
+      sessions: Schema.Number,
+      messages: Schema.Number,
+      parts: Schema.Number,
+      events: Schema.Number,
+    }),
+  }),
 })
 
 const SyncEventSchemas = EventManifest.Latest.values()

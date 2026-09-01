@@ -20,7 +20,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { buildPrompt, validateSummary } from "@opencode-ai/core/session/compaction"
+import { buildPrompt, recordRejected, validateSummary } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 import { NamedError } from "@opencode-ai/core/util/error"
 
@@ -480,6 +480,7 @@ const layer = Layer.effect(
         repeatedLineCount: validation.repeatedLineCount,
       }
       if (result === "continue" && !validation.valid) {
+        recordRejected()
         yield* Effect.logWarning("compaction summary rejected", { ...diagnostics, reason: validation.reason })
         processor.message.error = new NamedError.Unknown({
           message: `Compaction summary rejected: ${validation.reason}`,

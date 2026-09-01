@@ -1,4 +1,4 @@
-import { Clock, Effect, Stream } from "effect"
+import { Clock, Duration, Effect, Fiber, Scope, Stream } from "effect"
 import os from "os"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -22,6 +22,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { ProcessGovernor } from "@opencode-ai/core/process-governor"
 
 export { Parameters } from "./shell/prompt"
 
@@ -75,6 +76,7 @@ type Scan = {
   dirs: Set<string>
   patterns: Set<string>
   always: Set<string>
+  processClass: ProcessGovernor.Class
 }
 
 type Chunk = {
@@ -305,23 +307,29 @@ function toolOomCommand(shell: string, command: string, env: NodeJS.ProcessEnv) 
 ${command}`
 }
 
-function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv, processClass: ProcessGovernor.Class) {
   if (process.platform === "win32" && Shell.ps(shell)) {
-    return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+    return ProcessGovernor.mark(
+      ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+        cwd,
+        env,
+        stdin: "ignore",
+        detached: false,
+      }),
+      processClass,
+    )
+  }
+
+  return ProcessGovernor.mark(
+    ChildProcess.make(toolOomCommand(shell, command, env), [], {
+      shell,
       cwd,
       env,
       stdin: "ignore",
-      detached: false,
-    })
-  }
-
-  return ChildProcess.make(toolOomCommand(shell, command, env), [], {
-    shell,
-    cwd,
-    env,
-    stdin: "ignore",
-    detached: process.platform !== "win32",
-  })
+      detached: process.platform !== "win32",
+    }),
+    processClass,
+  )
 }
 const parser = lazy(async () => {
   const { Parser } = await import("web-tree-sitter")
@@ -401,12 +409,14 @@ export const ShellTool = Tool.define(
         dirs: new Set<string>(),
         patterns: new Set<string>(),
         always: new Set<string>(),
+        processClass: "ordinary",
       }
       const shellKind = ShellID.toKind(Shell.name(shell))
 
       for (const node of commands(root)) {
         const command = parts(node)
         const tokens = command.map((item) => item.text)
+        if (ProcessGovernor.classify(tokens) === "heavy") scan.processClass = "heavy"
         const cmd = ps || shellKind === "cmd" ? tokens[0]?.toLowerCase() : tokens[0]
 
         if (cmd && (FILES.has(cmd) || (shellKind === "cmd" && CMD_FILES.has(cmd)))) {
@@ -447,6 +457,7 @@ export const ShellTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
+        processClass: ProcessGovernor.Class
       },
       ctx: Tool.Context,
     ) {
@@ -465,14 +476,34 @@ export const ShellTool = Tool.define(
       let aborted = false
       let published = ""
       let publishedAt = Number.NEGATIVE_INFINITY
+      let publishing = false
 
-      const publish = Effect.fnUntraced(function* (force = false) {
+      const flush = Effect.fnUntraced(function* () {
         if (last === published) return
-        const now = yield* Clock.currentTimeMillis
-        if (!force && now - publishedAt < 250) return
-        yield* ctx.metadata({ metadata: { output: last } })
-        published = last
-        publishedAt = now
+        const output = last
+        yield* ctx.metadata({ metadata: { output } })
+        published = output
+        publishedAt = yield* Clock.currentTimeMillis
+      })
+
+      const publish = Effect.fnUntraced(function* (scope: Scope.Scope) {
+        if (last === published) return
+        if (publishing) return
+        publishing = true
+        yield* Effect.gen(function* () {
+          while (last !== published) {
+            const wait = 250 - ((yield* Clock.currentTimeMillis) - publishedAt)
+            if (wait > 0) yield* Effect.sleep(Duration.millis(wait))
+            yield* flush()
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              publishing = false
+            }),
+          ),
+          Effect.forkIn(scope),
+        )
       })
 
       const closeSink = Effect.fnUntraced(function* () {
@@ -506,12 +537,20 @@ export const ShellTool = Tool.define(
         },
       })
 
-      const code: number | null = yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* Effect.addFinalizer(closeSink)
-          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+      const abort = Effect.callback<void>((resume) => {
+        if (ctx.abort.aborted) return resume(Effect.void)
+        const handler = () => resume(Effect.void)
+        ctx.abort.addEventListener("abort", handler, { once: true })
+        return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
+      })
 
-          yield* Effect.forkScoped(
+      const run = Effect.scoped(
+        Effect.gen(function* () {
+          const scope = yield* Scope.Scope
+          yield* Effect.addFinalizer(closeSink)
+          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env, input.processClass))
+
+          const output = yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
               const size = Buffer.byteLength(chunk, "utf-8")
               hash.update(chunk)
@@ -541,44 +580,46 @@ export const ShellTool = Tool.define(
                         full = ""
                       }),
                     ),
-                    Effect.andThen(publish()),
+                    Effect.andThen(publish(scope)),
                   )
                 }
               }
 
-              return publish()
+              return publish(scope)
             }),
           )
-
-          const abort = Effect.callback<void>((resume) => {
-            if (ctx.abort.aborted) return resume(Effect.void)
-            const handler = () => resume(Effect.void)
-            ctx.abort.addEventListener("abort", handler, { once: true })
-            return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
-          })
 
           const timeout = Effect.sleep(`${input.timeout + 100} millis`)
 
           const exit = yield* Effect.raceAll([
             handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
-            abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
             timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
           ])
 
-          if (exit.kind === "abort") {
-            aborted = true
-            yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
-          }
           if (exit.kind === "timeout") {
             expired = true
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
+          yield* Fiber.join(output).pipe(Effect.catchCause(() => Effect.void))
 
           return exit.kind === "exit" ? exit.code : null
         }),
-      ).pipe(Effect.orDie)
+      )
+      const code: number | null = yield* run.pipe(
+        Effect.raceFirst(
+          abort.pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                aborted = true
+              }),
+            ),
+            Effect.as(null),
+          ),
+        ),
+        Effect.orDie,
+      )
 
-      yield* publish(true)
+      yield* flush()
 
       const meta: string[] = []
       if (expired) {
@@ -640,7 +681,7 @@ export const ShellTool = Tool.define(
               }
               const timeout = params.timeout ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
-              yield* Effect.scoped(
+              const scan = yield* Effect.scoped(
                 Effect.gen(function* () {
                   const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
                     Effect.sync(() => tree.delete()),
@@ -648,6 +689,7 @@ export const ShellTool = Tool.define(
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
                   yield* ask(ctx, scan, params)
+                  return scan
                 }),
               )
 
@@ -658,6 +700,7 @@ export const ShellTool = Tool.define(
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
+                  processClass: scan.processClass,
                 },
                 ctx,
               )

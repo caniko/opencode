@@ -245,4 +245,146 @@ describe("InstanceStore", () => {
       expect(disposed).toEqual([dir1, dir2])
     }),
   )
+
+  it.live("disposes idle instances but preserves active ones", () =>
+    Effect.gen(function* () {
+      const idle = yield* tmpdirScoped({ git: true })
+      const active = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const held = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const disposed: string[] = []
+      yield* registerDisposerScoped(async (directory) => {
+        disposed.push(directory)
+      })
+
+      yield* store.load({ directory: idle })
+      const request = yield* store
+        .provide(
+          { directory: active },
+          Effect.gen(function* () {
+            yield* Deferred.succeed(held, undefined)
+            yield* Deferred.await(release)
+          }),
+        )
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(held)
+
+      expect(yield* store.status()).toEqual({ loadedInstances: 2 })
+      yield* store.sweepIdle(Date.now() + 1)
+      expect(disposed).toEqual([idle])
+      expect(yield* store.status()).toEqual({ loadedInstances: 1 })
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(request)
+      yield* store.sweepIdle(Date.now() + 1)
+      expect(disposed).toEqual([idle, active])
+      expect(yield* store.status()).toEqual({ loadedInstances: 0 })
+    }),
+  )
+
+  it.live("waits for active users before reloading", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const held = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const disposed: string[] = []
+      yield* registerDisposerScoped(async (directory) => {
+        disposed.push(directory)
+      })
+
+      const first = yield* store.load({ directory: dir })
+      const request = yield* store
+        .provide(
+          { directory: dir },
+          Effect.gen(function* () {
+            yield* Deferred.succeed(held, undefined)
+            yield* Deferred.await(release)
+          }),
+        )
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(held)
+      const reload = yield* store.reload({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+      expect(disposed).toEqual([])
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(request)
+      const second = yield* Fiber.join(reload)
+      expect(disposed).toEqual([dir])
+      expect(second).not.toBe(first)
+    }),
+  )
+
+  it.live("serializes reload with an in-flight disposal", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const disposing = yield* Deferred.make<void>()
+      const releaseDispose = yield* Deferred.make<() => void>()
+      let active = 0
+      let maximum = 0
+      yield* registerDisposerScoped(() => {
+        active++
+        maximum = Math.max(maximum, active)
+        Deferred.doneUnsafe(disposing, Effect.void)
+        return new Promise<void>((resolve) => {
+          Deferred.doneUnsafe(
+            releaseDispose,
+            Effect.succeed(() => {
+              active--
+              resolve()
+            }),
+          )
+        })
+      })
+
+      yield* store.load({ directory: dir })
+      const dispose = yield* store.disposeDirectory(dir).pipe(Effect.forkScoped)
+      yield* Deferred.await(disposing)
+      const reload = yield* store.reload({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+      const release = yield* Deferred.await(releaseDispose)
+      yield* Effect.sync(release)
+      yield* Fiber.join(dispose)
+      yield* Fiber.join(reload)
+      expect(maximum).toBe(1)
+    }),
+  )
+
+  it.live("waits for idle disposal before loading a replacement", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const disposing = yield* Deferred.make<void>()
+      const releaseDispose = yield* Deferred.make<() => void>()
+      let initialized = 0
+      yield* setBootstrap(
+        Effect.sync(() => {
+          initialized++
+        }),
+      )
+      yield* registerDisposerScoped(() => {
+        Deferred.doneUnsafe(disposing, Effect.void)
+        return new Promise<void>((resolve) => {
+          Deferred.doneUnsafe(releaseDispose, Effect.succeed(resolve))
+        })
+      })
+
+      const first = yield* store.load({ directory: dir })
+      const sweep = yield* store.sweepIdle(Date.now() + 1).pipe(Effect.forkScoped)
+      yield* Deferred.await(disposing)
+      const replacement = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+      expect(initialized).toBe(1)
+
+      const release = yield* Deferred.await(releaseDispose)
+      yield* Effect.sync(release)
+      yield* Fiber.join(sweep)
+      const second = yield* Fiber.join(replacement)
+      expect(second).not.toBe(first)
+      expect(initialized).toBe(2)
+    }),
+  )
 })

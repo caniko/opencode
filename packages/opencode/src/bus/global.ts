@@ -19,4 +19,4 @@ class GlobalBusEmitter extends EventEmitter<{
   }
 }
 
-export const GlobalBus = new GlobalBusEmitter()
+export const GlobalBus = new GlobalBusEmitter().setMaxListeners(0)

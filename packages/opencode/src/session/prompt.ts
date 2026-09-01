@@ -23,6 +23,7 @@ import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { ProcessGovernor } from "@opencode-ai/core/process-governor"
 import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
@@ -41,7 +42,6 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
-import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
@@ -550,13 +550,16 @@ const layer = Layer.effect(
                 { cwd, sessionID: input.sessionID, callID: part.callID },
                 { env: {} },
               )
-              const cmd = ChildProcess.make(sh, args, {
-                cwd,
-                extendEnv: true,
-                env: { ...shellEnv.env, TERM: "dumb" },
-                stdin: "ignore",
-                forceKillAfter: "3 seconds",
-              })
+              const cmd = ProcessGovernor.mark(
+                ChildProcess.make(sh, args, {
+                  cwd,
+                  extendEnv: true,
+                  env: { ...shellEnv.env, TERM: "dumb" },
+                  stdin: "ignore",
+                  forceKillAfter: "3 seconds",
+                }),
+                ProcessGovernor.classifyShell(input.command),
+              )
               const handle = yield* spawner.spawn(cmd)
               yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
                 Effect.gen(function* () {
@@ -1389,10 +1392,34 @@ const layer = Layer.effect(
       if (shellMatches.length > 0) {
         const cfg = yield* config.get()
         const sh = Shell.preferred(cfg.shell)
-        const results = yield* Effect.promise(() =>
-          Promise.all(
-            shellMatches.map(async ([, cmd]) => (await Process.text([cmd], { shell: sh, nothrow: true })).text),
-          ),
+        const directory = (yield* InstanceState.context).directory
+        const results = yield* Effect.forEach(
+          shellMatches,
+          ([, command]) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const handle = yield* spawner.spawn(
+                  ProcessGovernor.mark(
+                    ChildProcess.make(command, [], {
+                      shell: sh,
+                      cwd: directory,
+                      stdin: "ignore",
+                      detached: process.platform !== "win32",
+                      forceKillAfter: "3 seconds",
+                    }),
+                    ProcessGovernor.classifyShell(command),
+                  ),
+                )
+                const output = yield* Stream.runFold(
+                  Stream.decodeText(handle.stdout),
+                  () => "",
+                  (all, chunk) => all + chunk,
+                )
+                yield* handle.exitCode
+                return output
+              }),
+            ).pipe(Effect.catch(() => Effect.succeed(""))),
+          { concurrency: "unbounded" },
         )
         let index = 0
         template = template.replace(bashRegex, () => results[index++])

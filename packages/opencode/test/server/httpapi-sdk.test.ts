@@ -343,7 +343,25 @@ describe("HttpApi SDK", () => {
       const log = yield* call(() => sdk.app.log({ service: "httpapi-sdk-test", level: "info", message: "hello" }))
 
       expect(health.response.status).toBe(200)
-      expect(health.data).toMatchObject({ healthy: true })
+      expect(health.data).toMatchObject({
+        healthy: true,
+        runtime: {
+          attachedSessions: expect.any(Number),
+          loadedInstances: expect.any(Number),
+          tools: {
+            ordinary: { queued: expect.any(Number), running: expect.any(Number), limit: 6 },
+            heavy: { queued: expect.any(Number), running: expect.any(Number), limit: 1 },
+          },
+          rejectedCompactions: expect.any(Number),
+          database: {
+            bytes: expect.any(Number),
+            sessions: expect.any(Number),
+            messages: expect.any(Number),
+            parts: expect.any(Number),
+            events: expect.any(Number),
+          },
+        },
+      })
       expect(yield* firstEvent((signal) => sdk.global.event({ signal }))).toMatchObject({
         payload: { type: "server.connected" },
       })
@@ -486,6 +504,63 @@ describe("HttpApi SDK", () => {
         return errorMessage(thrown)
       }),
     ),
+  )
+
+  httpapi(
+    "reports counts without leaking data across 25 attached projects",
+    Effect.gen(function* () {
+      const secret = "health-must-not-leak-this-title"
+      const projects = yield* Effect.forEach(
+        Array.from({ length: 25 }, (_, index) => index),
+        (index) =>
+          withProject("raw", {}, ({ sdk, directory }) =>
+            Effect.gen(function* () {
+              const created = yield* call(() => sdk.session.create({ title: `${secret}-${index}` }))
+              expect(created.response.status).toBe(200)
+              const sessionID = record(created.data).id
+              if (typeof sessionID !== "string")
+                return yield* Effect.die(new Error("session response did not include id"))
+              yield* seedMessage(directory, sessionID)
+              return sdk
+            }),
+          ),
+        { concurrency: "unbounded" },
+      )
+      yield* Effect.forEach(
+        projects,
+        (sdk) =>
+          Effect.gen(function* () {
+            const controller = yield* Effect.acquireRelease(
+              Effect.sync(() => new AbortController()),
+              (value) => Effect.sync(() => value.abort()),
+            )
+            const events = yield* Effect.acquireRelease(
+              call(() => sdk.global.event({ signal: controller.signal })),
+              (value) => call(async () => void (await value.stream.return?.(undefined))).pipe(Effect.ignore),
+            )
+            yield* call(() => events.stream.next()).pipe(
+              Effect.timeoutOrElse({
+                duration: "1 second",
+                orElse: () => Effect.fail(new Error("timed out waiting for global event attachment")),
+              }),
+            )
+          }),
+        { concurrency: "unbounded", discard: true },
+      )
+
+      const sdk = projects[0]
+      const health = yield* call(() => sdk.global.health())
+      expect(health.response.status).toBe(200)
+      const runtime = record(record(health.data).runtime)
+      const database = record(runtime.database)
+      expect(runtime.attachedSessions).toBeGreaterThanOrEqual(25)
+      expect(runtime.loadedInstances).toBeGreaterThanOrEqual(25)
+      expect(database.sessions).toBeGreaterThanOrEqual(25)
+      expect(database.messages).toBeGreaterThanOrEqual(25)
+      expect(database.parts).toBeGreaterThanOrEqual(25)
+      expect(JSON.stringify(health.data)).not.toContain(secret)
+      expect(JSON.stringify(health.data)).not.toContain("seeded message")
+    }),
   )
 
   httpapiInstance(

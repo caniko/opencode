@@ -9,6 +9,7 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { cliIt } from "../../lib/cli-process"
+import path from "node:path"
 
 describe("opencode serve (subprocess)", () => {
   // Smoke test: server starts, binds a port, and /global/health responds.
@@ -36,6 +37,65 @@ describe("opencode serve (subprocess)", () => {
   // The scope-close finalizer must actually terminate the child. Without this
   // test a regression in the kill path (e.g. a future refactor that forgets
   // to wire the finalizer) would leak processes on every test run.
+  cliIt.live(
+    "preserves sessions and accepts attachments after restart",
+    ({ home, opencode }) =>
+      Effect.gen(function* () {
+        const env = { OPENCODE_DB: path.join(home, "restart.db") }
+        const first = yield* opencode.serve({ env })
+        const created = yield* Effect.promise(() =>
+          fetch(`${first.url}/session`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            body: JSON.stringify({ title: "restart-persistence" }),
+          }),
+        )
+        expect(created.status).toBe(200)
+        const session = (yield* Effect.promise(() => created.json())) as { id: string }
+
+        yield* Effect.sync(first.kill)
+        yield* Effect.promise(() => first.exited).pipe(
+          Effect.timeoutOrElse({
+            duration: "10 seconds",
+            orElse: () => Effect.fail(new Error("timed out waiting for first server shutdown")),
+          }),
+        )
+
+        const restarted = yield* opencode.serve({ env })
+        const restored = yield* Effect.promise(() =>
+          fetch(`${restarted.url}/session/${session.id}`, { headers: { "x-opencode-directory": home } }),
+        )
+        expect(restored.status).toBe(200)
+
+        const controller = yield* Effect.acquireRelease(
+          Effect.sync(() => new AbortController()),
+          (value) => Effect.sync(() => value.abort()),
+        )
+        const events = yield* Effect.promise(() =>
+          fetch(`${restarted.url}/global/event`, { signal: controller.signal }),
+        )
+        expect(events.status).toBe(200)
+        if (!events.body) return yield* Effect.die(new Error("event response did not include a body"))
+        const reader = events.body.getReader()
+        yield* Effect.promise(() => reader.read()).pipe(
+          Effect.timeoutOrElse({
+            duration: "5 seconds",
+            orElse: () => Effect.fail(new Error("timed out waiting for restarted event attachment")),
+          }),
+        )
+
+        const health = yield* Effect.promise(() =>
+          fetch(`${restarted.url}/global/health`).then(
+            (response) =>
+              response.json() as Promise<{ runtime: { attachedSessions: number; database: { sessions: number } } }>,
+          ),
+        )
+        expect(health.runtime.database.sessions).toBeGreaterThanOrEqual(1)
+        expect(health.runtime.attachedSessions).toBeGreaterThanOrEqual(1)
+      }),
+    60_000,
+  )
+
   cliIt.live(
     "kills the subprocess on scope close",
     ({ opencode }) =>

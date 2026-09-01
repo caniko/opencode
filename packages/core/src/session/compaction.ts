@@ -13,6 +13,16 @@ const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
+let rejected = 0
+
+export function recordRejected() {
+  rejected++
+}
+
+export function rejectedCount() {
+  return rejected
+}
+
 const SUMMARY_SECTIONS = [
   { heading: "## Objective", content: true },
   { heading: "## Important Details", content: true },
@@ -270,6 +280,7 @@ export const make = (dependencies: Dependencies) => {
       repeatedLineCount: validation.repeatedLineCount,
     }
     if (!validation.valid) {
+      recordRejected()
       yield* Effect.logWarning("compaction summary rejected", { ...diagnostics, reason: validation.reason })
       return false
     }

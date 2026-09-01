@@ -69,6 +69,11 @@ export function resolveThreadDirectory(project?: string, envPWD = process.env.PW
   return Filesystem.resolve(cwd)
 }
 
+export function managedAttachUrl(env: NodeJS.ProcessEnv = process.env) {
+  if (["1", "true"].includes(env.OPENCODE_DIRECT?.toLowerCase() ?? "")) return
+  return env.OPENCODE_ATTACH_URL
+}
+
 export const TuiThreadCommand = cmd({
   command: "$0 [project]",
   describe: "start opencode tui",
@@ -148,6 +153,7 @@ export const TuiThreadCommand = cmd({
       return
     }
     const noReplay = args.replay === false || args.noReplay === true
+    const managedUrl = managedAttachUrl()
 
     if (args.mini) {
       const network = ["--port", "--hostname", "--mdns", "--no-mdns", "--mdns-domain", "--cors"].find((option) =>
@@ -161,6 +167,7 @@ export const TuiThreadCommand = cmd({
 
       const { runMini } = await import("./run")
       await runMini({
+        attach: managedUrl,
         directory: resolveThreadDirectory(args.project),
         continue: args.continue,
         session: args.session,
@@ -188,7 +195,6 @@ export const TuiThreadCommand = cmd({
 
     const unguard = win32InstallCtrlCGuard()
     try {
-      const { TuiConfig } = await import("@/config/tui")
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
         process.exitCode = 1
@@ -207,14 +213,16 @@ export const TuiThreadCommand = cmd({
       }
       const cwd = Filesystem.resolve(process.cwd())
 
-      const worker = new Worker(file, {
-        env: Object.fromEntries(
-          Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-        ),
-      })
-      const client = Rpc.client<typeof rpc>(worker)
+      const worker = managedUrl
+        ? undefined
+        : new Worker(file, {
+            env: Object.fromEntries(
+              Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+            ),
+          })
+      const client = worker ? Rpc.client<typeof rpc>(worker) : undefined
       const reload = () => {
-        client.call("reload", undefined).catch(() => {})
+        client?.call("reload", undefined).catch(() => {})
       }
       process.on("SIGUSR2", reload)
 
@@ -223,30 +231,37 @@ export const TuiThreadCommand = cmd({
         if (stopped) return
         stopped = true
         process.off("SIGUSR2", reload)
+        if (!client || !worker) return
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
         worker.terminate()
       }
 
       const prompt = await input(args.prompt)
-      const config = await TuiConfig.get()
 
       const network = resolveNetworkOptionsNoConfig(args)
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
 
-      const headers = external ? ServerAuth.headers() : undefined
+      const headers = managedUrl || external ? ServerAuth.headers() : undefined
 
-      const transport = external
+      const transport = managedUrl
         ? {
-            url: (await client.call("server", network)).url,
+            url: managedUrl,
             fetch: undefined,
             events: undefined,
             headers,
           }
-        : {
-            url: "http://opencode.internal",
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
-          }
+        : external
+          ? {
+              url: (await client!.call("server", network)).url,
+              fetch: undefined,
+              events: undefined,
+              headers,
+            }
+          : {
+              url: "http://opencode.internal",
+              fetch: createWorkerFetch(client!),
+              events: createEventSource(client!),
+            }
 
       try {
         await validateSession({
@@ -262,8 +277,10 @@ export const TuiThreadCommand = cmd({
         return
       }
 
+      const { TuiConfig } = await import("@/config/tui")
+      const config = await TuiConfig.get()
       setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
+        client?.call("checkUpgrade", { directory: cwd }).catch(() => {})
       }, 1000).unref?.()
 
       try {
@@ -275,6 +292,7 @@ export const TuiThreadCommand = cmd({
             url: transport.url,
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
+              if (!client) return [tui]
               const server = await client.call("snapshot", undefined)
               return [tui, server]
             },

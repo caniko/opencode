@@ -26,6 +26,7 @@ import { PassThrough } from "node:stream"
 import launch from "cross-spawn"
 import { makeGlobalNode } from "./effect/app-node"
 import { filesystem, path } from "./effect/app-node-platform"
+import { ProcessGovernor } from "./process-governor"
 
 const toError = (err: unknown): Error => (err instanceof globalThis.Error ? err : new globalThis.Error(String(err)))
 
@@ -106,8 +107,12 @@ export const make = Effect.gen(function* () {
     return path.resolve(opts.cwd)
   })
 
-  const env = (opts: ChildProcess.CommandOptions) =>
-    opts.extendEnv ? { ...globalThis.process.env, ...opts.env } : opts.env
+  const env = (opts: ChildProcess.CommandOptions) => {
+    const source = opts.extendEnv ? { ...globalThis.process.env, ...opts.env } : opts.env
+    if (!source) return source
+    const { [ProcessGovernor.CLASS_ENV]: _, ...clean } = source
+    return clean
+  }
 
   const input = (x: ChildProcess.CommandInput | undefined): NodeChildProcess.IOType | undefined =>
     Stream.isStream(x) ? "pipe" : x
@@ -264,10 +269,17 @@ export const make = Effect.gen(function* () {
     return { stdout, stderr, all: Stream.merge(stdout, stderr) }
   }
 
-  const spawn = (command: ChildProcess.StandardCommand, opts: NodeChildProcess.SpawnOptions) =>
+  const spawn = (
+    command: ChildProcess.StandardCommand,
+    opts: NodeChildProcess.SpawnOptions,
+    lease?: ProcessGovernor.Lease,
+  ) =>
     Effect.callback<readonly [NodeChildProcess.ChildProcess, ExitSignal], PlatformError.PlatformError>((resume) => {
       const signal = Deferred.makeUnsafe<readonly [code: number | null, signal: NodeJS.Signals | null]>()
-      const proc = launch(command.command, command.args, opts)
+      const guarded = lease
+        ? ProcessGovernor.handoff(lease, command.command, command.args, opts.shell)
+        : { command: command.command, args: command.args, shell: opts.shell }
+      const proc = launch(guarded.command, guarded.args, { ...opts, shell: guarded.shell })
       let end = false
       let exit: readonly [code: number | null, signal: NodeJS.Signals | null] | undefined
       proc.on("error", (err) => {
@@ -282,11 +294,18 @@ export const make = Effect.gen(function* () {
         Deferred.doneUnsafe(signal, Exit.succeed(exit ?? args))
       })
       proc.on("spawn", () => {
-        resume(Effect.succeed([proc, signal]))
+        const result = [proc, signal] as const
+        resume(
+          lease && process.platform === "win32"
+            ? lease.adopt(proc.pid!, false).pipe(Effect.as(result))
+            : Effect.succeed(result),
+        )
       })
-      return Effect.sync(() => {
-        proc.kill("SIGTERM")
-      })
+      return Effect.try({
+        try: () =>
+          process.platform === "win32" || !proc.pid ? proc.kill("SIGTERM") : process.kill(-proc.pid, "SIGTERM"),
+        catch: () => undefined,
+      }).pipe(Effect.ignore)
     })
 
   const killGroup = (
@@ -364,6 +383,17 @@ export const make = Effect.gen(function* () {
     function* (command) {
       switch (command._tag) {
         case "StandardCommand": {
+          const processClass = command.options.env?.[ProcessGovernor.CLASS_ENV]
+          const lease =
+            processClass === "ordinary" || processClass === "heavy"
+              ? yield* Effect.uninterruptibleMask((restore) =>
+                  Effect.gen(function* () {
+                    const lease = yield* restore(ProcessGovernor.acquire(processClass))
+                    yield* Effect.addFinalizer(() => lease.release)
+                    return lease
+                  }),
+                )
+              : undefined
           const sin = stdin(command.options)
           const sout = stdio(command.options, "stdout")
           const serr = stdio(command.options, "stderr")
@@ -371,14 +401,18 @@ export const make = Effect.gen(function* () {
           const dir = yield* cwd(command.options)
 
           const [proc, signal] = yield* Effect.acquireRelease(
-            spawn(command, {
-              cwd: dir,
-              env: env(command.options),
-              stdio: stdios(sin, sout, serr, extra),
-              detached: command.options.detached ?? process.platform !== "win32",
-              shell: command.options.shell,
-              windowsHide: process.platform === "win32",
-            }),
+            spawn(
+              command,
+              {
+                cwd: dir,
+                env: env(command.options),
+                stdio: stdios(sin, sout, serr, extra),
+                detached: command.options.detached ?? process.platform !== "win32",
+                shell: command.options.shell,
+                windowsHide: process.platform === "win32",
+              },
+              lease,
+            ),
             Effect.fnUntraced(function* ([proc, signal]) {
               const done = yield* Deferred.isDone(signal)
               const kill = timeout(proc, command, command.options)
@@ -401,7 +435,6 @@ export const make = Effect.gen(function* () {
               return yield* Effect.ignore(escalated)
             }),
           )
-
           const fd = yield* setupFds(command, proc, extra)
           const out = setupOutput(command, proc, sout, serr)
           let ref = true
