@@ -209,7 +209,11 @@ export function classify(tokens: ReadonlyArray<string>): Class {
   }
   if (executable.command === "canix") {
     if (["crossbow", "deploy", "rebuild"].includes(action.value)) return "heavy"
-    if (action.value === "repo" && next(normalized, action.index + 1)?.value === "check") return "heavy"
+    if (
+      action.value === "repo" &&
+      ["check", "flake-check"].includes(next(normalized, action.index + 1)?.value ?? "")
+    )
+      return "heavy"
     return "ordinary"
   }
   const heavy = subcommands.get(executable.command)

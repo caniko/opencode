@@ -17,6 +17,7 @@ describe("process governor", () => {
       expect(ProcessGovernor.classify(["sudo", "--user=root", "cargo", "test"])).toBe("heavy")
       expect(ProcessGovernor.classify(["nix", "--offline", "build"])).toBe("heavy")
       expect(ProcessGovernor.classify(["canix", "--output", "json", "repo", "check"])).toBe("heavy")
+      expect(ProcessGovernor.classify(["canix", "repo", "flake-check", "--profile", "full"])).toBe("heavy")
       expect(ProcessGovernor.classify(["bun", "run", "typecheck"])).toBe("heavy")
       expect(ProcessGovernor.classify(["rg", "cargo", "build"])).toBe("ordinary")
       expect(ProcessGovernor.classify(["echo", "make"])).toBe("ordinary")
