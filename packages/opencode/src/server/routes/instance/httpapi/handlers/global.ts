@@ -13,9 +13,10 @@ import { sql } from "drizzle-orm"
 import { stat } from "node:fs/promises"
 import { Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
-import { HttpServerResponse } from "effect/unstable/http"
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
+import { IncomingMessage } from "node:http"
 import { RootHttpApi } from "../api"
 import { GlobalUpgradeInput } from "../groups/global"
 
@@ -30,9 +31,35 @@ function eventData(data: unknown): Sse.Event {
   }
 }
 
+function connectionClosed(request: HttpServerRequest.HttpServerRequest) {
+  const source = request.source
+  if (source instanceof Request) {
+    return Effect.callback<void>((resume) => {
+      if (source.signal.aborted) {
+        resume(Effect.void)
+        return
+      }
+      const close = () => resume(Effect.void)
+      source.signal.addEventListener("abort", close, { once: true })
+      return Effect.sync(() => source.signal.removeEventListener("abort", close))
+    })
+  }
+  if (!(source instanceof IncomingMessage)) return Effect.never
+  return Effect.callback<void>((resume) => {
+    if (source.socket.destroyed) {
+      resume(Effect.void)
+      return
+    }
+    const close = () => resume(Effect.void)
+    source.socket.once("close", close)
+    return Effect.sync(() => source.socket.off("close", close))
+  })
+}
+
 function eventResponse() {
   return Effect.gen(function* () {
     let attached = false
+    const request = yield* HttpServerRequest.HttpServerRequest
     const events = Stream.callback<GlobalBusEvent>((queue) => {
       const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
       return Effect.acquireRelease(
@@ -64,6 +91,7 @@ function eventResponse() {
             attachedSessions--
           }).pipe(Effect.andThen(Effect.logInfo("global event disconnected"))),
         ),
+        Stream.merge(Stream.fromEffect(connectionClosed(request)).pipe(Stream.drain), { haltStrategy: "right" }),
       ),
       {
         contentType: "text/event-stream",

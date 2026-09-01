@@ -9,6 +9,7 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { cliIt } from "../../lib/cli-process"
+import { pollWithTimeout } from "../../lib/effect"
 import path from "node:path"
 
 describe("opencode serve (subprocess)", () => {
@@ -67,6 +68,11 @@ describe("opencode serve (subprocess)", () => {
         )
         expect(restored.status).toBe(200)
 
+        const before = yield* Effect.promise(() =>
+          fetch(`${restarted.url}/global/health`).then(
+            (response) => response.json() as Promise<{ runtime: { attachedSessions: number } }>,
+          ),
+        )
         const controller = yield* Effect.acquireRelease(
           Effect.sync(() => new AbortController()),
           (value) => Effect.sync(() => value.abort()),
@@ -91,7 +97,19 @@ describe("opencode serve (subprocess)", () => {
           ),
         )
         expect(health.runtime.database.sessions).toBeGreaterThanOrEqual(1)
-        expect(health.runtime.attachedSessions).toBeGreaterThanOrEqual(1)
+        expect(health.runtime.attachedSessions).toBeGreaterThanOrEqual(before.runtime.attachedSessions + 1)
+
+        controller.abort()
+        yield* pollWithTimeout(
+          Effect.promise(() =>
+            fetch(`${restarted.url}/global/health`)
+              .then((response) => response.json() as Promise<{ runtime: { attachedSessions: number } }>)
+              .then((current) =>
+                current.runtime.attachedSessions === before.runtime.attachedSessions ? true : undefined,
+              ),
+          ),
+          "event attachment count did not return to its baseline",
+        )
       }),
     60_000,
   )
