@@ -12,6 +12,7 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
@@ -45,6 +46,42 @@ const assistantRow = (
 }
 
 describe("SessionProjector", () => {
+  it.effect("attaches created sessions to an existing worktree when the project id is stale", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const live = Project.ID.make("b4de3c04570de574aadc36231f0faabbd541f350")
+      const stale = Project.ID.make("ca5e0ee17526afe3c1b26616149d3f2346887862")
+      const directory = "/data/nvme0/can/canix"
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: live, worktree: AbsolutePath.make(directory), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      const createdID = SessionV2.ID.make("ses_stale_project")
+      yield* events.publish(SessionV1.Event.Created, {
+        sessionID: createdID,
+        info: SessionV1.SessionInfo.make({
+          id: createdID,
+          slug: "stale-project",
+          version: "test",
+          projectID: stale,
+          directory,
+          title: "test",
+          time: { created: 1, updated: 1 },
+        }),
+      })
+      expect(
+        (yield* db
+          .select({ project_id: SessionTable.project_id })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, createdID))
+          .get()
+          .pipe(Effect.orDie))?.project_id,
+      ).toBe(live)
+    }),
+  )
+
   it.effect("projects moved sessions without the transitional context epoch table", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

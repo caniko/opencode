@@ -13,7 +13,8 @@ import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
-import type { DeepMutable } from "../schema"
+import { ProjectTable } from "../project/sql"
+import { AbsolutePath, type DeepMutable } from "../schema"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -44,7 +45,7 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
   return {
     id: info.id,
     project_id: info.projectID,
-    workspace_id: info.workspaceID ?? null,
+    workspace_id: info.workspaceID || null,
     parent_id: info.parentID,
     slug: info.slug,
     directory: info.directory,
@@ -213,9 +214,35 @@ const layer = Layer.effectDiscard(
     const { db } = yield* Database.Service
     yield* events.project(SessionV1.Event.Created, (event) =>
       Effect.gen(function* () {
+        const info = event.data.info
+        const byId = yield* db
+          .select({ id: ProjectTable.id })
+          .from(ProjectTable)
+          .where(eq(ProjectTable.id, info.projectID))
+          .get()
+          .pipe(Effect.orDie)
+        const worktree = AbsolutePath.make(info.directory)
+        // ponytail: match worktree == session.directory; ProjectDirectoryTable if nested dirs miss
+        const byWorktree = byId
+          ? undefined
+          : yield* db
+              .select({ id: ProjectTable.id })
+              .from(ProjectTable)
+              .where(eq(ProjectTable.worktree, worktree))
+              .get()
+              .pipe(Effect.orDie)
+        const projectID = byId ? info.projectID : (byWorktree?.id ?? info.projectID)
+        if (!byId && !byWorktree) {
+          yield* db
+            .insert(ProjectTable)
+            .values({ id: projectID, worktree, sandboxes: [] })
+            .onConflictDoNothing()
+            .run()
+            .pipe(Effect.orDie)
+        }
         const stored = yield* db
           .insert(SessionTable)
-          .values(sessionRow(event.data.info))
+          .values(sessionRow({ ...info, projectID }))
           .onConflictDoNothing()
           .returning({ sessionID: SessionTable.id })
           .get()
