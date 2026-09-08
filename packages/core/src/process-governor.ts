@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import type { ChildProcess } from "effect/unstable/process"
+import { which } from "./util/which"
 
 export type Class = "ordinary" | "heavy"
 
@@ -209,10 +210,7 @@ export function classify(tokens: ReadonlyArray<string>): Class {
   }
   if (executable.command === "canix") {
     if (["crossbow", "deploy", "rebuild"].includes(action.value)) return "heavy"
-    if (
-      action.value === "repo" &&
-      ["check", "flake-check"].includes(next(normalized, action.index + 1)?.value ?? "")
-    )
+    if (action.value === "repo" && ["check", "flake-check"].includes(next(normalized, action.index + 1)?.value ?? ""))
       return "heavy"
     return "ordinary"
   }
@@ -708,13 +706,13 @@ export function make(input: { ordinary: number; heavy: number; dir?: string }) {
   return { acquire, status }
 }
 
-const HANDOFF = `slot=$1
+const HANDOFF = ([cat, ln, rm, mv, sleep]: string[]) => `slot=$1
 token=$2
 shift 2
 breaker="$slot.breaker"
 breaker_token="$token-$$"
 process_start() {
-  raw=$(cat "/proc/$$/stat" 2>/dev/null) || return
+  raw=$(${cat} "/proc/$$/stat" 2>/dev/null) || return
   rest=\${raw##*) }
   set -- $rest
   printf %s "\${20}"
@@ -729,29 +727,29 @@ candidate="$breaker.$breaker_token.tmp"
 attempts=0
 while :; do
   printf %s "$breaker_owner" > "$candidate" || exit 125
-  if ln "$candidate" "$breaker" 2>/dev/null; then
-    rm -f "$candidate"
+  if ${ln} "$candidate" "$breaker" 2>/dev/null; then
+    ${rm} -f "$candidate"
     break
   fi
-  rm -f "$candidate"
+  ${rm} -f "$candidate"
   [ -d "$slot" ] || exit 125
   attempts=$((attempts + 1))
   [ "$attempts" -lt 500 ] || exit 125
-  sleep 0.01
+  ${sleep} 0.01
 done
-owned() { [ "$(cat "$breaker" 2>/dev/null)" = "$breaker_owner" ]; }
+owned() { [ "$(${cat} "$breaker" 2>/dev/null)" = "$breaker_owner" ]; }
 cleanup() {
-  rm -f "$candidate"
-  if owned; then rm -f "$breaker"; fi
+  ${rm} -f "$candidate"
+  if owned; then ${rm} -f "$breaker"; fi
 }
 trap cleanup EXIT
 trap 'exit 125' HUP INT TERM
-[ "$(cat "$slot/token" 2>/dev/null)" = "$token" ] || exit 125
+[ "$(${cat} "$slot/token" 2>/dev/null)" = "$token" ] || exit 125
 owned || exit 125
 tmp="$slot/.owner-$token"
 printf '{"pid":%s,"token":"%s","group":true}' "$$" "$token" > "$tmp" || exit 125
 owned || exit 125
-mv "$tmp" "$slot/owner.json" || exit 125
+${mv} "$tmp" "$slot/owner.json" || exit 125
 owned || exit 125
 cleanup
 trap - EXIT HUP INT TERM
@@ -765,9 +763,15 @@ export function handoff(
 ): GuardedCommand {
   if (process.platform === "win32") return { command, args, shell }
   const target = shell ? [typeof shell === "string" ? shell : "/bin/sh", "-c", command] : [command, ...args]
+  // Admission bootstrap uses host utilities, not the tool's potentially empty PATH.
+  const helpers = ["cat", "ln", "rm", "mv", "sleep"].map((name) => {
+    const file = which(name)
+    if (!file) throw new Error("Process governor requires host core utilities")
+    return `'${file.replaceAll("'", "'\\''")}'`
+  })
   return {
     command: "/bin/sh",
-    args: ["-c", HANDOFF, "opencode-governor", lease.slot, lease.token, ...target],
+    args: ["-c", HANDOFF(helpers), "opencode-governor", lease.slot, lease.token, ...target],
     shell: false,
   }
 }

@@ -99,6 +99,51 @@ describe("process governor", () => {
     }),
   )
 
+  it.live("handoff uses host utilities without restoring the tool PATH", () =>
+    Effect.gen(function* () {
+      if (process.platform === "win32") return
+      const dir = yield* fixture
+      const governor = ProcessGovernor.make({ ordinary: 1, heavy: 1, dir })
+      for (const env of [
+        { PATH: "", cat: "keep-cat", ln: "keep-ln", rm: "keep-rm", mv: "keep-mv", sleep: "keep-sleep" },
+        {},
+      ]) {
+        const lease = yield* governor.acquire("ordinary")
+        try {
+          const command = ProcessGovernor.handoff(lease, Bun.which("env")!, [], false)
+          const result = yield* Effect.promise(
+            () =>
+              new Promise<{ status: number | null; stdout: string }>((resolve, reject) => {
+                let stdout = ""
+                const child = spawn(command.command, command.args, {
+                  env,
+                  detached: true,
+                  timeout: 5000,
+                  stdio: ["ignore", "pipe", "pipe"],
+                })
+                child.stdout.on("data", (chunk) => {
+                  stdout += chunk.toString()
+                })
+                child.on("error", reject)
+                child.on("close", (status) => resolve({ status, stdout }))
+              }),
+          )
+          expect(result.status).toBe(0)
+          for (const [key, value] of Object.entries(env))
+            expect(result.stdout.toString().split("\n")).toContain(`${key}=${value}`)
+          expect(
+            result.stdout
+              .toString()
+              .split("\n")
+              .filter((line) => line.startsWith("PATH=")),
+          ).toEqual(Object.hasOwn(env, "PATH") ? ["PATH="] : [])
+        } finally {
+          yield* lease.release
+        }
+      }
+    }),
+  )
+
   it.live("shares running and cancelled state across governor instances", () =>
     Effect.gen(function* () {
       const dir = yield* fixture
