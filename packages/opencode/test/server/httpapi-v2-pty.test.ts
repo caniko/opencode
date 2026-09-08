@@ -134,9 +134,11 @@ describe("v2 pty HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const dir = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+        const cat = Bun.which("cat")
+        expect(cat).toBeTruthy()
         const created = yield* HttpClientRequest.post("/api/pty").pipe(
           directoryHeader(dir),
-          HttpClientRequest.bodyJson({ command: "/bin/cat", title: "v2-websocket" }),
+          HttpClientRequest.bodyJson({ command: cat, title: "v2-websocket" }),
           Effect.flatMap(HttpClient.execute),
         )
         expect(created.status).toBe(200)

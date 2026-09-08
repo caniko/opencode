@@ -17,4 +17,5 @@ if (process.versions.bun !== expectedBunVersion) {
   console.warn(`Warning: Bun version ${process.versions.bun} differs from expected ${expectedBunVersion}`);
 }
 '
-bun typecheck
+# ponytail: serialize within workstation memory limits; CI can use wider concurrency.
+bun typecheck --concurrency=1

@@ -5,6 +5,7 @@ import { Cause, Effect, Exit, Layer, Stream } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Global } from "@opencode-ai/core/global"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -44,13 +45,7 @@ const ctx = {
 
 const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   LayerNode.compile(
-    LayerNode.group([
-      Agent.node,
-      FSUtil.node,
-      Instruction.node,
-      Ripgrep.node,
-      Truncate.node,
-    ]),
+    LayerNode.group([Agent.node, CrossSpawnSpawner.node, FSUtil.node, Instruction.node, Ripgrep.node, Truncate.node]),
   )
 
 const it = testEffect(Layer.mergeAll(readLayer(), testInstanceStoreLayer))
