@@ -16,6 +16,7 @@ import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
+import { shellEnvironment } from "../plugin/shell-environment"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
@@ -514,8 +515,6 @@ const layer = Layer.effect(
           }).pipe(Effect.ensuring(markReady))
 
           const cfg = yield* config.get()
-          const sh = Shell.preferred(cfg.shell)
-          const args = Shell.args(sh, input.command, cwd)
           let output = ""
           let aborted = false
 
@@ -545,16 +544,18 @@ const layer = Layer.effect(
 
           const exit = yield* restore(
             Effect.gen(function* () {
-              const shellEnv = yield* plugin.trigger(
-                "shell.env",
-                { cwd, sessionID: input.sessionID, callID: part.callID },
-                { env: {} },
-              )
+              const environment = yield* shellEnvironment(plugin, {
+                cwd,
+                sessionID: input.sessionID,
+                callID: part.callID,
+              })
+              const sh = Shell.preferred(cfg.shell, environment.resolved ? { env: environment.env, cwd } : undefined)
+              const args = Shell.args(sh, input.command, cwd)
               const cmd = ProcessGovernor.mark(
                 ChildProcess.make(sh, args, {
                   cwd,
-                  extendEnv: true,
-                  env: { ...shellEnv.env, TERM: "dumb" },
+                  extendEnv: false,
+                  env: { ...environment.env, TERM: "dumb" },
                   stdin: "ignore",
                   forceKillAfter: "3 seconds",
                 }),

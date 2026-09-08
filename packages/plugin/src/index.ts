@@ -268,8 +268,19 @@ export interface Hooks {
     output: { args: any },
   ) => Promise<void>
   "shell.env"?: (
-    input: { cwd: string; sessionID?: string; callID?: string },
-    output: { env: Record<string, string> },
+    input: {
+      cwd: string
+      sessionID?: string
+      callID?: string
+      /** Inherited snapshot, never the mutable process environment. */
+      env?: Readonly<Record<string, string>>
+      signal?: AbortSignal
+    },
+    output: {
+      env: Record<string, string>
+      /** Opt into per-operation lookup. Removals precede env assignments, so later overlays win. */
+      unset?: string[]
+    },
   ) => Promise<void>
   "tool.execute.after"?: (
     input: { tool: string; sessionID: string; callID: string; args: any },

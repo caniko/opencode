@@ -13,6 +13,7 @@ export type Opts = {
   rows?: number
   cwd?: string
   env?: Record<string, string>
+  exactEnv?: boolean
 }
 
 export type Proc = {
