@@ -98,12 +98,13 @@ const configLayer = (
     auth?: Layer.Layer<Auth.Service>
     account?: Layer.Layer<Account.Service>
     client?: HttpClient.HttpClient
+    npm?: Layer.Layer<Npm.Service>
   } = {},
 ) =>
   LayerNode.compile(LayerNode.group([Config.node, FSUtil.node, Env.node, CrossSpawnSpawner.node]), [
     [Auth.node, options.auth ?? AuthTest.empty],
     [Account.node, options.account ?? AccountTest.empty],
-    [Npm.node, NpmTest.noop],
+    [Npm.node, options.npm ?? NpmTest.noop],
     [httpClient, Layer.succeed(HttpClient.HttpClient, options.client ?? unexpectedHttp)],
   ])
 
@@ -1152,6 +1153,42 @@ it.effect("installs dependencies in writable OPENCODE_CONFIG_DIR", () =>
     expect(yield* FSUtil.use.readFileString(path.join(configDir, ".gitignore"))).toContain("package-lock.json")
   }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(LayerNode.compile(CrossSpawnSpawner.node))),
 )
+
+for (const kind of ["empty", "package", "plugin", "tool", "explicit"] as const) {
+  const installs: string[] = []
+  configIt({
+    npm: Layer.mock(Npm.Service)({
+      install: (dir) =>
+        Effect.sync(() => {
+          installs.push(dir)
+        }),
+    }),
+  }).effect(`bootstraps SDK dependencies only for local code or manifests: ${kind}`, () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const configDir = path.join(dir, "config")
+      yield* FSUtil.use.ensureDir(configDir)
+      if (kind === "package") yield* FSUtil.use.writeFileString(path.join(configDir, "package.json"), "{}")
+      if (kind === "plugin" || kind === "tool")
+        yield* FSUtil.use.writeWithDirs(path.join(configDir, kind, "example.ts"), "export default {}")
+      if (kind === "explicit") {
+        yield* FSUtil.use.writeFileString(path.join(configDir, "example.ts"), "export default {}")
+        yield* FSUtil.use.writeFileString(
+          path.join(configDir, "opencode.json"),
+          JSON.stringify({ plugin: ["./example.ts"] }),
+        )
+      }
+      yield* withProcessEnv(
+        "OPENCODE_CONFIG_DIR",
+        configDir,
+        Config.Service.use((svc) => svc.get().pipe(Effect.andThen(svc.waitForDependencies()))).pipe(
+          provideInstanceEffect(dir),
+        ),
+      )
+      expect(installs.includes(configDir)).toBe(kind !== "empty")
+    }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(LayerNode.compile(CrossSpawnSpawner.node))),
+  )
+}
 
 // Note: deduplication and serialization of npm installs is now handled by the
 // core Npm.Service (via EffectFlock). Those behaviors are tested in the core
