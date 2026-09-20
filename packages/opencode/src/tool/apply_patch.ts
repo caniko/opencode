@@ -266,9 +266,9 @@ export const ApplyPatchTool = Tool.define(
       for (const change of fileChanges) {
         if (change.type === "delete") continue
         const target = change.movePath ?? change.filePath
-        yield* lsp.touchFile(target, "document")
+        yield* lsp.touchFile(target, "document", ctx.sessionID)
       }
-      const diagnostics = yield* lsp.diagnostics()
+      const diagnostics = yield* lsp.diagnostics(ctx.sessionID)
 
       // Generate output summary
       const summaryLines = fileChanges.map((change) => {

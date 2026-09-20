@@ -7,8 +7,9 @@ import { pathToFileURL, fileURLToPath } from "url"
 import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
+import { Plugin } from "@/plugin"
 import { spawn as lspspawn } from "./launch"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
@@ -112,25 +113,30 @@ type LocInput = { file: string; line: number; character: number }
 interface State {
   clients: LSPClient.Info[]
   servers: Record<string, LSPServer.Info>
-  broken: Set<string>
+  broken: Map<string, { session: string | undefined; sig: string }>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  sessions: Map<LSPClient.Info, string | undefined>
+  envSig: Map<LSPClient.Info, string>
+  released: Set<string>
 }
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
-  readonly status: () => Effect.Effect<Status[]>
-  readonly hasClients: (file: string) => Effect.Effect<boolean>
-  readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
-  readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
-  readonly hover: (input: LocInput) => Effect.Effect<any>
-  readonly definition: (input: LocInput) => Effect.Effect<any[]>
-  readonly references: (input: LocInput) => Effect.Effect<any[]>
-  readonly implementation: (input: LocInput) => Effect.Effect<any[]>
-  readonly documentSymbol: (uri: string) => Effect.Effect<(DocumentSymbol | Symbol)[]>
-  readonly workspaceSymbol: (query: string) => Effect.Effect<Symbol[]>
-  readonly prepareCallHierarchy: (input: LocInput) => Effect.Effect<any[]>
-  readonly incomingCalls: (input: LocInput) => Effect.Effect<any[]>
-  readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
+  readonly status: (sessionID?: string) => Effect.Effect<Status[]>
+  readonly hasClients: (file: string, sessionID?: string) => Effect.Effect<boolean>
+  readonly touchFile: (input: string, diagnostics?: "document" | "full", sessionID?: string) => Effect.Effect<void>
+  readonly diagnostics: (sessionID?: string) => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
+  readonly hover: (input: LocInput, sessionID?: string) => Effect.Effect<any>
+  readonly definition: (input: LocInput, sessionID?: string) => Effect.Effect<any[]>
+  readonly references: (input: LocInput, sessionID?: string) => Effect.Effect<any[]>
+  readonly implementation: (input: LocInput, sessionID?: string) => Effect.Effect<any[]>
+  readonly documentSymbol: (uri: string, sessionID?: string) => Effect.Effect<(DocumentSymbol | Symbol)[]>
+  readonly workspaceSymbol: (query: string, sessionID?: string) => Effect.Effect<Symbol[]>
+  readonly prepareCallHierarchy: (input: LocInput, sessionID?: string) => Effect.Effect<any[]>
+  readonly incomingCalls: (input: LocInput, sessionID?: string) => Effect.Effect<any[]>
+  readonly outgoingCalls: (input: LocInput, sessionID?: string) => Effect.Effect<any[]>
+  /** Shut down and drop every client owned by a session (e.g. on session delete). */
+  readonly releaseSession: (sessionID: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LSP") {}
@@ -170,10 +176,10 @@ const layer = Layer.effect(
                 id: name,
                 root: existing?.root ?? (async (_file, ctx) => ctx.directory),
                 extensions: item.extensions ?? existing?.extensions ?? [],
-                spawn: async (root) => ({
+                spawn: async (root, _ctx, _flags, env) => ({
                   process: lspspawn(item.command[0], item.command.slice(1), {
                     cwd: root,
-                    env: { ...process.env, ...item.env },
+                    env: { ...(env ?? process.env), ...item.env },
                   }),
                   initialization: item.initialization,
                 }),
@@ -191,8 +197,11 @@ const layer = Layer.effect(
         const s: State = {
           clients: [],
           servers,
-          broken: new Set(),
+          broken: new Map(),
           spawning: new Map(),
+          sessions: new Map(),
+          envSig: new Map(),
+          released: new Set(),
         }
 
         yield* Effect.addFinalizer(() =>
@@ -205,28 +214,65 @@ const layer = Layer.effect(
       }),
     )
 
-    const getClients = Effect.fnUntraced(function* (file: string) {
+    const getClients = Effect.fnUntraced(function* (file: string, sessionID?: string) {
       const ctx = yield* InstanceState.context
       if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
+      // Resolve the language-server environment through the explicit
+      // `lsp.env` contract. `shell.env` plugins are never consulted here.
+      // Hook failures fail this operation; only the absence of any plugin
+      // falls back to the process baseline (unchanged legacy behavior).
+      // Resolved at execution time: sibling layers are invisible at build time.
+      const plugin = yield* Effect.serviceOption(Plugin.Service)
+      const inherited = Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      )
+      const projectEnv = yield* Option.match(plugin, {
+        onNone: () => Effect.succeed({ env: { ...inherited }, sig: JSON.stringify({ ...inherited }) }),
+        onSome: (plugin) =>
+          Effect.gen(function* () {
+            const output: { env: Record<string, string>; unset?: string[]; replace?: boolean } = { env: {} }
+            const extra = yield* plugin.trigger(
+              "lsp.env",
+              { cwd: path.dirname(file), sessionID, env: Object.freeze({ ...inherited }) },
+              output,
+            )
+            if (extra.replace) return { env: { ...extra.env }, sig: JSON.stringify({ ...extra.env }) }
+            const env = { ...inherited }
+            for (const key of extra.unset ?? []) if (!Object.hasOwn(extra.env, key)) delete env[key]
+            const resolved = { ...env, ...extra.env }
+            return { env: resolved, sig: JSON.stringify(resolved) }
+          }),
+      })
       const s = yield* InstanceState.get(state)
+      if (sessionID && s.released.has(sessionID)) return [] as LSPClient.Info[]
       const clients = yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
         const result: LSPClient.Info[] = []
         let updated = 0
 
-        async function schedule(server: LSPServer.Info, root: string, key: string) {
+          // Client identity includes the session: environments are approved
+          // per session, so one session's server is never reused by another.
+          async function schedule(server: LSPServer.Info, root: string) {
+          const key = root + server.id + (sessionID ?? "")
+          const fail = () => {
+            s.broken.set(key, { session: sessionID, sig: projectEnv.sig })
+          }
           const handle = await server
-            .spawn(root, ctx, flags)
+            .spawn(root, ctx, flags, projectEnv.env)
             .then((value) => {
-              if (!value) s.broken.add(key)
+              if (!value) fail()
               return value
             })
             .catch(() => {
-              s.broken.add(key)
+              fail()
               return undefined
             })
 
           if (!handle) return undefined
+          if (sessionID && s.released.has(sessionID)) {
+            await Process.stop(handle.process)
+            return undefined
+          }
           const client = await LSPClient.create({
             serverID: server.id,
             server: handle,
@@ -234,21 +280,37 @@ const layer = Layer.effect(
             directory: ctx.directory,
             instance: ctx,
           }).catch(async () => {
-            s.broken.add(key)
+            s.broken.set(key, { session: sessionID, sig: projectEnv.sig })
             await Process.stop(handle.process)
             return undefined
           })
 
           if (!client) return undefined
 
-          const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
+          const existing = s.clients.find(
+            (x) => x.root === root && x.serverID === server.id && s.sessions.get(x) === sessionID,
+          )
           if (existing) {
             await Process.stop(handle.process)
             return existing
           }
 
           s.clients.push(client)
+          s.sessions.set(client, sessionID)
+          s.envSig.set(client, projectEnv.sig)
           return client
+        }
+
+        const dropClient = async (client: LSPClient.Info) => {
+          try {
+            await client.shutdown()
+          } catch {
+            // Already gone; state cleanup below still applies.
+          }
+          const idx = s.clients.indexOf(client)
+          if (idx !== -1) s.clients.splice(idx, 1)
+          s.sessions.delete(client)
+          s.envSig.delete(client)
         }
 
         for (const server of Object.values(s.servers)) {
@@ -256,15 +318,31 @@ const layer = Layer.effect(
 
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
+          const key = root + server.id + (sessionID ?? "")
+          // A changed environment signature heals past failures and retires
+          // live clients spawned under the previous selection (reselect/clear).
+          const prev = s.broken.get(key)
+          if (prev && prev.sig !== projectEnv.sig) s.broken.delete(key)
+          for (const stale of s.clients.filter(
+            (x) =>
+              x.root === root &&
+              x.serverID === server.id &&
+              s.sessions.get(x) === sessionID &&
+              s.envSig.get(x) !== projectEnv.sig,
+          )) {
+            await dropClient(stale)
+          }
+          if (s.broken.has(key)) continue
 
-          const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
+          const match = s.clients.find(
+            (x) => x.root === root && x.serverID === server.id && s.sessions.get(x) === sessionID,
+          )
           if (match) {
             result.push(match)
             continue
           }
 
-          const inflight = s.spawning.get(root + server.id)
+          const inflight = s.spawning.get(key)
           if (inflight) {
             const client = await inflight
             if (!client) continue
@@ -272,12 +350,12 @@ const layer = Layer.effect(
             continue
           }
 
-          const task = schedule(server, root, root + server.id)
-          s.spawning.set(root + server.id, task)
+          const task = schedule(server, root)
+          s.spawning.set(key, task)
 
           task.finally(() => {
-            if (s.spawning.get(root + server.id) === task) {
-              s.spawning.delete(root + server.id)
+            if (s.spawning.get(key) === task) {
+              s.spawning.delete(key)
             }
           })
 
@@ -296,25 +374,44 @@ const layer = Layer.effect(
       return clients.result
     })
 
-    const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) {
-      const clients = yield* getClients(file)
+    const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>, sessionID?: string) {
+      const clients = yield* getClients(file, sessionID)
       return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x))))
     })
 
-    const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
+    const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>, sessionID?: string) {
       const s = yield* InstanceState.get(state)
-      return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
+      const owned = s.clients.filter((x) => s.sessions.get(x) === sessionID)
+      return yield* Effect.promise(() => Promise.all(owned.map((x) => fn(x))))
+    })
+
+    const releaseSession = Effect.fn("LSP.releaseSession")(function* (sessionID: string) {
+      const s = yield* InstanceState.get(state)
+      s.released.add(sessionID)
+      for (const client of s.clients.filter((x) => s.sessions.get(x) === sessionID)) {
+        try {
+          yield* Effect.promise(() => client.shutdown())
+        } catch {
+          // Already gone; state cleanup below still applies.
+        }
+        const idx = s.clients.indexOf(client)
+        if (idx !== -1) s.clients.splice(idx, 1)
+        s.sessions.delete(client)
+        s.envSig.delete(client)
+      }
+      for (const [key, entry] of s.broken) if (entry.session === sessionID) s.broken.delete(key)
     })
 
     const init = Effect.fn("LSP.init")(function* () {
       yield* InstanceState.get(state)
     })
 
-    const status = Effect.fn("LSP.status")(function* () {
+    const status = Effect.fn("LSP.status")(function* (sessionID?: string) {
       const ctx = yield* InstanceState.context
       const s = yield* InstanceState.get(state)
       const result: Status[] = []
       for (const client of s.clients) {
+        if (s.sessions.get(client) !== sessionID) continue
         result.push({
           id: client.serverID,
           name: s.servers[client.serverID].id,
@@ -325,7 +422,7 @@ const layer = Layer.effect(
       return result
     })
 
-    const hasClients = Effect.fn("LSP.hasClients")(function* (file: string) {
+    const hasClients = Effect.fn("LSP.hasClients")(function* (file: string, sessionID?: string) {
       const ctx = yield* InstanceState.context
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(async () => {
@@ -334,16 +431,16 @@ const layer = Layer.effect(
           if (server.extensions.length && !server.extensions.includes(extension)) continue
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
+          if (s.broken.has(root + server.id + (sessionID ?? ""))) continue
           return true
         }
         return false
       })
     })
 
-    const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
+    const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full", sessionID?: string) {
       yield* Effect.logInfo("touching file", { file: input })
-      const clients = yield* getClients(input)
+      const clients = yield* getClients(input, sessionID)
       yield* Effect.promise(() =>
         Promise.all(
           clients.map(async (client) => {
@@ -361,9 +458,9 @@ const layer = Layer.effect(
       )
     })
 
-    const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
+    const diagnostics = Effect.fn("LSP.diagnostics")(function* (sessionID?: string) {
       const results: Record<string, LSPClient.Diagnostic[]> = {}
-      const all = yield* runAll(async (client) => client.diagnostics)
+      const all = yield* runAll(async (client) => client.diagnostics, sessionID)
       for (const result of all) {
         for (const [p, diags] of result.entries()) {
           const arr = results[p] || []
@@ -374,7 +471,7 @@ const layer = Layer.effect(
       return results
     })
 
-    const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
+    const hover = Effect.fn("LSP.hover")(function* (input: LocInput, sessionID?: string) {
       return yield* run(input.file, (client) =>
         client.connection
           .sendRequest("textDocument/hover", {
@@ -382,10 +479,11 @@ const layer = Layer.effect(
             position: { line: input.line, character: input.character },
           })
           .catch(() => null),
+        sessionID,
       )
     })
 
-    const definition = Effect.fn("LSP.definition")(function* (input: LocInput) {
+    const definition = Effect.fn("LSP.definition")(function* (input: LocInput, sessionID?: string) {
       const results = yield* run(input.file, (client) =>
         client.connection
           .sendRequest("textDocument/definition", {
@@ -393,11 +491,12 @@ const layer = Layer.effect(
             position: { line: input.line, character: input.character },
           })
           .catch(() => null),
+        sessionID,
       )
       return results.flat().filter(Boolean)
     })
 
-    const references = Effect.fn("LSP.references")(function* (input: LocInput) {
+    const references = Effect.fn("LSP.references")(function* (input: LocInput, sessionID?: string) {
       const results = yield* run(input.file, (client) =>
         client.connection
           .sendRequest("textDocument/references", {
@@ -406,11 +505,12 @@ const layer = Layer.effect(
             context: { includeDeclaration: true },
           })
           .catch(() => []),
+        sessionID,
       )
       return results.flat().filter(Boolean)
     })
 
-    const implementation = Effect.fn("LSP.implementation")(function* (input: LocInput) {
+    const implementation = Effect.fn("LSP.implementation")(function* (input: LocInput, sessionID?: string) {
       const results = yield* run(input.file, (client) =>
         client.connection
           .sendRequest("textDocument/implementation", {
@@ -418,29 +518,32 @@ const layer = Layer.effect(
             position: { line: input.line, character: input.character },
           })
           .catch(() => null),
+        sessionID,
       )
       return results.flat().filter(Boolean)
     })
 
-    const documentSymbol = Effect.fn("LSP.documentSymbol")(function* (uri: string) {
+    const documentSymbol = Effect.fn("LSP.documentSymbol")(function* (uri: string, sessionID?: string) {
       const file = fileURLToPath(uri)
       const results = yield* run(file, (client) =>
         client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []),
+        sessionID,
       )
       return (results.flat() as (DocumentSymbol | Symbol)[]).filter(Boolean)
     })
 
-    const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string) {
+    const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string, sessionID?: string) {
       const results = yield* runAll((client) =>
         client.connection
           .sendRequest<Symbol[]>("workspace/symbol", { query })
           .then((result) => result.filter((x) => kinds.includes(x.kind)).slice(0, 10))
           .catch(() => [] as Symbol[]),
+        sessionID,
       )
       return results.flat()
     })
 
-    const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput) {
+    const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput, sessionID?: string) {
       const results = yield* run(input.file, (client) =>
         client.connection
           .sendRequest("textDocument/prepareCallHierarchy", {
@@ -448,6 +551,7 @@ const layer = Layer.effect(
             position: { line: input.line, character: input.character },
           })
           .catch(() => []),
+        sessionID,
       )
       return results.flat().filter(Boolean)
     })
@@ -455,6 +559,7 @@ const layer = Layer.effect(
     const callHierarchyRequest = Effect.fnUntraced(function* (
       input: LocInput,
       direction: "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls",
+      sessionID?: string,
     ) {
       const results = yield* run(input.file, async (client) => {
         const items = await client.connection
@@ -465,16 +570,16 @@ const layer = Layer.effect(
           .catch(() => [] as unknown[])
         if (!items?.length) return []
         return client.connection.sendRequest(direction, { item: items[0] }).catch(() => [])
-      })
+      }, sessionID)
       return results.flat().filter(Boolean)
     })
 
-    const incomingCalls = Effect.fn("LSP.incomingCalls")(function* (input: LocInput) {
-      return yield* callHierarchyRequest(input, "callHierarchy/incomingCalls")
+    const incomingCalls = Effect.fn("LSP.incomingCalls")(function* (input: LocInput, sessionID?: string) {
+      return yield* callHierarchyRequest(input, "callHierarchy/incomingCalls", sessionID)
     })
 
-    const outgoingCalls = Effect.fn("LSP.outgoingCalls")(function* (input: LocInput) {
-      return yield* callHierarchyRequest(input, "callHierarchy/outgoingCalls")
+    const outgoingCalls = Effect.fn("LSP.outgoingCalls")(function* (input: LocInput, sessionID?: string) {
+      return yield* callHierarchyRequest(input, "callHierarchy/outgoingCalls", sessionID)
     })
 
     return Service.of({
@@ -492,6 +597,7 @@ const layer = Layer.effect(
       prepareCallHierarchy,
       incomingCalls,
       outgoingCalls,
+      releaseSession,
     })
   }),
 )
