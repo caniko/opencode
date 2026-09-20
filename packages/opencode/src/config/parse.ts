@@ -9,23 +9,22 @@ export function jsonc(text: string, filepath: string): unknown {
   const errors: JsoncParseError[] = []
   const data = parseJsoncImpl(text, errors, { allowTrailingComma: true })
   if (errors.length) {
-    const lines = text.split("\n")
+    // Never embed substituted config text or source-line excerpts: by now
+    // {env:} substitution has already spliced live secrets into `text`.
+    // Report only the error code plus line/column so diagnostics cannot
+    // exfiltrate credentials (escaped quotes and unterminated strings
+    // defeat textual redaction).
     const issues = errors
       .map((e) => {
         const beforeOffset = text.substring(0, e.offset).split("\n")
         const line = beforeOffset.length
         const column = beforeOffset[beforeOffset.length - 1].length + 1
-        const problemLine = lines[line - 1]
-
-        const error = `${printParseErrorCode(e.error)} at line ${line}, column ${column}`
-        if (!problemLine) return error
-
-        return `${error}\n   Line ${line}: ${problemLine}\n${"".padStart(column + 9)}^`
+        return `${printParseErrorCode(e.error)} at line ${line}, column ${column}`
       })
       .join("\n")
     throw new JsonError({
       path: filepath,
-      message: `\n--- JSONC Input ---\n${text}\n--- Errors ---\n${issues}\n--- End ---`,
+      message: `\n--- Errors ---\n${issues}\n--- End ---`,
     })
   }
 
