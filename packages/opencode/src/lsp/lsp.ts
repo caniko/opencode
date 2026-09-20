@@ -113,7 +113,7 @@ type LocInput = { file: string; line: number; character: number }
 interface State {
   clients: LSPClient.Info[]
   servers: Record<string, LSPServer.Info>
-  broken: Map<string, { session: string | undefined; sig: string }>
+  broken: Map<string, string | undefined>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
   sessions: Map<LSPClient.Info, string | undefined>
   envSig: Map<LSPClient.Info, string>
@@ -122,6 +122,11 @@ interface State {
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
+  /**
+   * Session-specific inventory: with a session ID lists that session's
+   * servers, otherwise only the shared baseline pool. Sessionless callers
+   * (HTTP endpoint, debug CLI) therefore never see session-owned servers.
+   */
   readonly status: (sessionID?: string) => Effect.Effect<Status[]>
   readonly hasClients: (file: string, sessionID?: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full", sessionID?: string) => Effect.Effect<void>
@@ -180,6 +185,7 @@ const layer = Layer.effect(
                   process: lspspawn(item.command[0], item.command.slice(1), {
                     cwd: root,
                     env: { ...(env ?? process.env), ...item.env },
+                    extendEnv: false,
                   }),
                   initialization: item.initialization,
                 }),
@@ -214,19 +220,17 @@ const layer = Layer.effect(
       }),
     )
 
-    const getClients = Effect.fnUntraced(function* (file: string, sessionID?: string) {
-      const ctx = yield* InstanceState.context
-      if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
-      // Resolve the language-server environment through the explicit
-      // `lsp.env` contract. `shell.env` plugins are never consulted here.
-      // Hook failures fail this operation; only the absence of any plugin
-      // falls back to the process baseline (unchanged legacy behavior).
-      // Resolved at execution time: sibling layers are invisible at build time.
+    // Resolve the language-server environment through the explicit
+    // `lsp.env` contract. `shell.env` plugins are never consulted here.
+    // Hook failures fail the operation; only the absence of any plugin
+    // falls back to the process baseline (unchanged legacy behavior).
+    // Resolved at execution time: sibling layers are invisible at build time.
+    const resolveEnv = Effect.fnUntraced(function* (file: string, sessionID?: string) {
       const plugin = yield* Effect.serviceOption(Plugin.Service)
       const inherited = Object.fromEntries(
         Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
       )
-      const projectEnv = yield* Option.match(plugin, {
+      return yield* Option.match(plugin, {
         onNone: () => Effect.succeed({ env: { ...inherited }, sig: JSON.stringify({ ...inherited }) }),
         onSome: (plugin) =>
           Effect.gen(function* () {
@@ -243,8 +247,17 @@ const layer = Layer.effect(
             return { env: resolved, sig: JSON.stringify(resolved) }
           }),
       })
+    })
+
+    const getClients = Effect.fnUntraced(function* (file: string, sessionID?: string) {
+      const ctx = yield* InstanceState.context
+      if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
+      const projectEnv = yield* resolveEnv(file, sessionID)
       const s = yield* InstanceState.get(state)
       if (sessionID && s.released.has(sessionID)) return [] as LSPClient.Info[]
+      // Identity covers root, server, session AND environment signature, so a
+      // reselect never reuses an in-flight start from the previous selection.
+      const keyFor = (root: string, serverID: string) => root + serverID + (sessionID ?? "") + projectEnv.sig
       const clients = yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
         const result: LSPClient.Info[] = []
@@ -253,9 +266,9 @@ const layer = Layer.effect(
           // Client identity includes the session: environments are approved
           // per session, so one session's server is never reused by another.
           async function schedule(server: LSPServer.Info, root: string) {
-          const key = root + server.id + (sessionID ?? "")
+          const key = keyFor(root, server.id)
           const fail = () => {
-            s.broken.set(key, { session: sessionID, sig: projectEnv.sig })
+            s.broken.set(key, sessionID)
           }
           const handle = await server
             .spawn(root, ctx, flags, projectEnv.env)
@@ -280,15 +293,23 @@ const layer = Layer.effect(
             directory: ctx.directory,
             instance: ctx,
           }).catch(async () => {
-            s.broken.set(key, { session: sessionID, sig: projectEnv.sig })
+            s.broken.set(key, sessionID)
             await Process.stop(handle.process)
             return undefined
           })
 
           if (!client) return undefined
+          if (sessionID && s.released.has(sessionID)) {
+            await client.shutdown().catch(() => undefined)
+            return undefined
+          }
 
           const existing = s.clients.find(
-            (x) => x.root === root && x.serverID === server.id && s.sessions.get(x) === sessionID,
+            (x) =>
+              x.root === root &&
+              x.serverID === server.id &&
+              s.sessions.get(x) === sessionID &&
+              s.envSig.get(x) === projectEnv.sig,
           )
           if (existing) {
             await Process.stop(handle.process)
@@ -318,11 +339,10 @@ const layer = Layer.effect(
 
           const root = await server.root(file, ctx)
           if (!root) continue
-          const key = root + server.id + (sessionID ?? "")
-          // A changed environment signature heals past failures and retires
-          // live clients spawned under the previous selection (reselect/clear).
-          const prev = s.broken.get(key)
-          if (prev && prev.sig !== projectEnv.sig) s.broken.delete(key)
+          const key = keyFor(root, server.id)
+          // Identity covers the environment signature, so past failures only
+          // suppress retries under the same selection, and live clients from
+          // a previous selection (reselect/clear) are retired below.
           for (const stale of s.clients.filter(
             (x) =>
               x.root === root &&
@@ -335,7 +355,11 @@ const layer = Layer.effect(
           if (s.broken.has(key)) continue
 
           const match = s.clients.find(
-            (x) => x.root === root && x.serverID === server.id && s.sessions.get(x) === sessionID,
+            (x) =>
+              x.root === root &&
+              x.serverID === server.id &&
+              s.sessions.get(x) === sessionID &&
+              s.envSig.get(x) === projectEnv.sig,
           )
           if (match) {
             result.push(match)
@@ -399,7 +423,7 @@ const layer = Layer.effect(
         s.sessions.delete(client)
         s.envSig.delete(client)
       }
-      for (const [key, entry] of s.broken) if (entry.session === sessionID) s.broken.delete(key)
+      for (const [key, owner] of s.broken) if (owner === sessionID) s.broken.delete(key)
     })
 
     const init = Effect.fn("LSP.init")(function* () {
@@ -422,8 +446,13 @@ const layer = Layer.effect(
       return result
     })
 
+    // Availability probe on the same resolution path as getClients: hook
+    // failures fail the probe, and a changed selection heals past failures.
     const hasClients = Effect.fn("LSP.hasClients")(function* (file: string, sessionID?: string) {
       const ctx = yield* InstanceState.context
+      if (!containsPath(file, ctx)) return false
+      const projectEnv = yield* resolveEnv(file, sessionID)
+      const keyFor = (root: string, serverID: string) => root + serverID + (sessionID ?? "") + projectEnv.sig
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
@@ -431,7 +460,7 @@ const layer = Layer.effect(
           if (server.extensions.length && !server.extensions.includes(extension)) continue
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id + (sessionID ?? ""))) continue
+          if (s.broken.has(keyFor(root, server.id))) continue
           return true
         }
         return false

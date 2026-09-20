@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, chmod, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Deferred, Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -55,15 +55,16 @@ const itProjectEnv = testEffect(
 )
 // A stub pkl-lsp that records its spawn environment, answers the LSP
 // handshake, and stays alive until shutdown. Every real-spawn test uses it
-// so client creation never hangs.
-const stubServer = (marker: string, recordEnv: boolean) =>
+// so client creation never hangs. `tag` identifies the stub in hover results,
+// `delayMs` postpones the initialize answer to force handshake races.
+const stubServer = (marker: string, tag = "pkl-stub", delayMs = 0) =>
   `#!${process.execPath}
 const fs = require("node:fs")
 fs.writeFileSync(${JSON.stringify(marker)},
   "argv=" + process.argv.slice(2).join(" ") + "\\n" +
   "secret=" + (process.env.LSP_PROBE_SECRET ?? "absent") + "\\n" +
-  "overlay=" + (process.env.LSP_OVERLAY_PROBE ?? "absent") + "\\n" +
-  "recordEnv=" + ${JSON.stringify(recordEnv)} + "\\n")
+  "overlay=" + (process.env.LSP_OVERLAY_PROBE ?? "absent") + "\\n")
+const DELAY = ${JSON.stringify(delayMs)}
 let buf = Buffer.alloc(0)
 const send = (m) => {
   const json = JSON.stringify(m)
@@ -78,17 +79,21 @@ process.stdin.on("data", (chunk) => {
     if (buf.length < idx + 4 + len) return
     const msg = JSON.parse(buf.slice(idx + 4, idx + 4 + len).toString())
     buf = buf.slice(idx + 4 + len)
-    if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { hoverProvider: true } } })
-    else if (msg.method === "textDocument/hover") send({ jsonrpc: "2.0", id: msg.id, result: { contents: "pkl-stub-hover" } })
+    if (msg.method === "initialize") {
+      const reply = () => send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { hoverProvider: true } } })
+      if (DELAY > 0) setTimeout(reply, DELAY)
+      else reply()
+    }
+    else if (msg.method === "textDocument/hover") send({ jsonrpc: "2.0", id: msg.id, result: { contents: ${JSON.stringify(tag + "-hover")} } })
     else if (msg.method === "shutdown") send({ jsonrpc: "2.0", id: msg.id, result: null })
     else if (msg.method === "exit") process.exit(0)
   }
 })
 `
-const writeStub = (stubDir: string, marker: string, recordEnv = false) =>
+const writeStub = (stubDir: string, marker: string, tag = "pkl-stub", delayMs = 0, binName = "pkl-lsp") =>
   Effect.promise(() => {
-    const stubPath = path.join(stubDir, "pkl-lsp")
-    return writeFile(stubPath, stubServer(marker, recordEnv)).then(() => chmod(stubPath, 0o755))
+    const stubPath = path.join(stubDir, binName)
+    return writeFile(stubPath, stubServer(marker, tag, delayMs)).then(() => chmod(stubPath, 0o755))
   })
 const denyingPlugin = {
   trigger: ((_name: string, _input: any, _output: any) =>
@@ -461,7 +466,7 @@ process.stdin.on("data", (chunk) => {
               const stubDir = await mkdtemp(path.join(tmpdir(), `pkl-${tag}-`))
               const marker = path.join(stubDir, "spawned.txt")
               const stubPath = path.join(stubDir, "pkl-lsp")
-              await writeFile(stubPath, stubServer(marker, false)).then(() => chmod(stubPath, 0o755))
+              await writeFile(stubPath, stubServer(marker, `${tag}-stub`)).then(() => chmod(stubPath, 0o755))
               return { stubDir, marker }
             })
           // Phase one: select shell A.
@@ -469,15 +474,15 @@ process.stdin.on("data", (chunk) => {
           process.env.PKL_STUB_DIR = a.stubDir
           try {
             const first = yield* lsp.hover(file, "reselect-session")
-            expect(JSON.stringify(first)).toContain("pkl-stub-hover")
+            expect(JSON.stringify(first)).toContain("a-stub-hover")
             const seenA = yield* Effect.promise(() => readFile(a.marker, "utf8").catch(() => ""))
             expect(seenA).toContain("argv=--stdio")
             expect(yield* lsp.status("reselect-session")).toHaveLength(1)
             // Phase two: reselect shell B. The stale client must not be reused.
-            const b = yield* makeStub("b")
+            const b = yield* makeStub("fast")
             process.env.PKL_STUB_DIR = b.stubDir
             const second = yield* lsp.hover(file, "reselect-session")
-            expect(JSON.stringify(second)).toContain("pkl-stub-hover")
+            expect(JSON.stringify(second)).toContain("fast-stub-hover")
             const seenB = yield* Effect.promise(() => readFile(b.marker, "utf8").catch(() => ""))
             expect(seenB).toContain("argv=--stdio")
             expect(yield* lsp.status("reselect-session")).toHaveLength(1)
@@ -498,16 +503,21 @@ process.stdin.on("data", (chunk) => {
           const file = { file: path.join(dir, "config.pkl"), line: 0, character: 0 }
           const spy = spyOn(LSPServer.Pkl, "spawn")
           try {
-            // No selection: baseline PATH has no pkl-lsp, lookup fails.
+            // No selection: the Pkl server is registered, but the baseline
+            // PATH has no pkl-lsp binary, so the spawn fails.
+            // The tool path probes availability first, so assert through it.
             delete process.env.PKL_STUB_DIR
+            expect(yield* lsp.hasClients(file.file, "heal-session")).toBe(true)
             yield* lsp.hover(file, "heal-session").pipe(Effect.catch(() => Effect.succeed([])))
             expect(spy).toHaveBeenCalledTimes(1)
-            // Select a shell providing pkl-lsp: same session retries.
+            // Select a shell providing pkl-lsp: the probe recovers first,
+            // then the same session retries the spawn.
             const stubDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-heal-")))
             const marker = path.join(stubDir, "spawned.txt")
             yield* writeStub(stubDir, marker)
             process.env.PKL_STUB_DIR = stubDir
             try {
+              expect(yield* lsp.hasClients(file.file, "heal-session")).toBe(true)
               const healed = yield* lsp.hover(file, "heal-session")
               expect(spy).toHaveBeenCalledTimes(2)
               expect(JSON.stringify(healed)).toContain("pkl-stub-hover")
@@ -615,6 +625,120 @@ process.stdin.on("data", (chunk) => {
             expect(spy).toHaveBeenCalledTimes(1)
           } finally {
             spy.mockRestore()
+          }
+        }),
+      ),
+    { config: { lsp: true } },
+  )
+
+  itProjectEnv.instance(
+    "configured commands spawn with the exact resolved environment",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const stubDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-custom-")))
+          const marker = path.join(stubDir, "spawned.txt")
+          yield* writeStub(stubDir, marker, "custom-stub", 0, "env-probe-stub")
+          process.env.PKL_STUB_DIR = stubDir
+          process.env.LSP_PROBE_SECRET = "backend-only"
+          try {
+            const result = yield* lsp.hover(
+              { file: path.join(dir, "probe", "dummy.probe"), line: 0, character: 0 },
+              "custom-session",
+            )
+            expect(JSON.stringify(result)).toContain("custom-stub-hover")
+            const seen = yield* Effect.promise(() => readFile(marker, "utf8").catch(() => ""))
+            expect(seen).toContain("secret=absent")
+          } finally {
+            delete process.env.PKL_STUB_DIR
+            delete process.env.LSP_PROBE_SECRET
+          }
+        }),
+      ),
+    {
+      config: {
+        lsp: {
+          envprobe: { command: ["env-probe-stub"], extensions: [".probe"] },
+        },
+      },
+    },
+  )
+
+  itProjectEnv.instance(
+    "a reselect never joins the previous selection's pending start",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = { file: path.join(dir, "config.pkl"), line: 0, character: 0 }
+          const slowDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-slow-")))
+          const slowMarker = path.join(slowDir, "spawned.txt")
+          yield* writeStub(slowDir, slowMarker, "slow-stub", 1500)
+          const fastDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-fast-")))
+          const fastMarker = path.join(fastDir, "spawned.txt")
+          yield* writeStub(fastDir, fastMarker, "fast-stub")
+          const waitFor = (marker: string) =>
+            Effect.promise(async () => {
+              for (let n = 0; n < 100; n++) {
+                try {
+                  await readFile(marker, "utf8")
+                  return
+                } catch {
+                  await new Promise((r) => setTimeout(r, 50))
+                }
+              }
+              throw new Error(`stub never spawned: ${marker}`)
+            })
+          process.env.PKL_STUB_DIR = slowDir
+          try {
+            const first = yield* Effect.forkChild(lsp.hover(file, "race-session"))
+            yield* waitFor(slowMarker)
+            // Reselect while the first handshake is still pending.
+            process.env.PKL_STUB_DIR = fastDir
+            const second = yield* lsp.hover(file, "race-session")
+            expect(JSON.stringify(second)).toContain("fast-stub-hover")
+            const firstResult = yield* Fiber.join(first)
+            // The first operation legitimately used its own selection.
+            expect(JSON.stringify(firstResult)).toContain("slow-stub-hover")
+            // Convergence: exactly one live client, no further spawns.
+            const after = yield* lsp.hover(file, "race-session")
+            expect(JSON.stringify(after)).toContain("fast-stub-hover")
+            expect(yield* lsp.status("race-session")).toHaveLength(1)
+            const seenFast = yield* Effect.promise(() => readFile(fastMarker, "utf8"))
+            expect(seenFast).toContain("argv=--stdio")
+          } finally {
+            delete process.env.PKL_STUB_DIR
+          }
+        }),
+      ),
+    { config: { lsp: true } },
+  )
+
+  itProjectEnv.instance(
+    "deleting a session during initialization leaves no client behind",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = { file: path.join(dir, "config.pkl"), line: 0, character: 0 }
+          const stubDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-doomed-")))
+          const marker = path.join(stubDir, "spawned.txt")
+          yield* writeStub(stubDir, marker, "doomed-stub", 1200)
+          process.env.PKL_STUB_DIR = stubDir
+          try {
+            const pending = yield* Effect.forkChild(lsp.hover(file, "midflight-session").pipe(Effect.exit))
+            yield* Effect.sleep("300 millis")
+            yield* lsp.releaseSession("midflight-session")
+            const exit = yield* Fiber.join(pending)
+            expect(yield* lsp.status("midflight-session")).toEqual([])
+            // The process did start (proves the race was real), but no
+            // client survived the release.
+            const seen = yield* Effect.promise(() => readFile(marker, "utf8").catch(() => ""))
+            expect(seen).toContain("argv=--stdio")
+            void exit
+          } finally {
+            delete process.env.PKL_STUB_DIR
           }
         }),
       ),
