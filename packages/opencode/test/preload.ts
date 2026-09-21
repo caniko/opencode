@@ -86,6 +86,11 @@ delete process.env["OTEL_RESOURCE_ATTRIBUTES"]
 // Use in-memory sqlite
 process.env["OPENCODE_DB"] = ":memory:"
 
+// Shell resolution falls back to $SHELL; several suites assume bash
+// semantics, so pin it for hermetic runs regardless of the login shell.
+// Tests that exercise other shells set SHELL explicitly per case.
+if (process.platform !== "win32") process.env["SHELL"] = "/bin/bash"
+
 // Now safe to import from src/
 const { initProjectors } = await import("../src/server/projectors")
 

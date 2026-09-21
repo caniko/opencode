@@ -1,7 +1,7 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { describe, expect, spyOn } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Logger } from "effect"
 import { Direnv } from "@opencode-ai/core/direnv"
 import { provideTmpdirInstance, testInstanceStoreLayer, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -273,6 +273,48 @@ describe("Format", () => {
               "$FILE",
             ],
             extensions: [".snap"],
+          },
+        },
+      },
+    },
+  )
+  it.instance(
+    "failure logs name formatter environment keys but never values",
+    () =>
+      Format.Service.use((fmt) =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const file = `${test.directory}/test.redact`
+          yield* Effect.promise(() => Bun.write(file, "x"))
+          const messages: unknown[] = []
+          // One formatter fails to spawn, the other exits non-zero; both
+          // failure branches must redact configured environment values.
+          yield* fmt.file(file).pipe(
+            Effect.provide(
+              Logger.layer([
+                Logger.make<unknown, void>((options) => {
+                  messages.push(options.message)
+                }),
+              ]),
+            ),
+          )
+          const dump = JSON.stringify(messages)
+          expect(dump).toContain("FORMATTER_TEST_SECRET")
+          expect(dump).not.toContain("s3cr3t-redact-me-9f8e7d6c")
+        }),
+      ),
+    {
+      config: {
+        formatter: {
+          boom: {
+            command: ["no-such-formatter-binary-xyz"],
+            environment: { FORMATTER_TEST_SECRET: "s3cr3t-redact-me-9f8e7d6c" },
+            extensions: [".redact"],
+          },
+          bust: {
+            command: ["false"],
+            environment: { FORMATTER_TEST_SECRET: "s3cr3t-redact-me-9f8e7d6c" },
+            extensions: [".redact"],
           },
         },
       },

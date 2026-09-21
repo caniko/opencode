@@ -96,7 +96,8 @@ const layer = Layer.effect(
                     Effect.logError("failed to format file", {
                       error: "spawn failed",
                       command: cmd,
-                      ...item.environment,
+                      // Names only: values may carry credentials.
+                      environment: Object.keys(item.environment ?? {}),
                       file: filepath,
                       cause: errorMessage(error.cause ?? error),
                     }).pipe(Effect.as(undefined)),
@@ -105,7 +106,7 @@ const layer = Layer.effect(
               if (result && result.exitCode !== 0) {
                 yield* Effect.logError("failed", {
                   command: cmd,
-                  ...item.environment,
+                  environment: Object.keys(item.environment ?? {}),
                 })
               }
             }
