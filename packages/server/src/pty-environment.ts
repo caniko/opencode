@@ -4,7 +4,10 @@ import { Context, Effect, Layer } from "effect"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 
 export interface Interface {
-  readonly get: (input: { directory: string; cwd: string }) => Effect.Effect<Record<string, string>>
+  readonly get: (input: { directory: string; cwd: string; env?: Record<string, string> }) => Effect.Effect<{
+    env: NodeJS.ProcessEnv
+    resolved: boolean
+  }>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ServerPtyEnvironment") {}
@@ -12,7 +15,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 export const layer = Layer.succeed(
   Service,
   Service.of({
-    get: () => Effect.succeed({}),
+    get: (input) => Effect.succeed({ env: { ...process.env, ...input.env }, resolved: false }),
   }),
 )
 

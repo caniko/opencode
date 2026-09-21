@@ -10,6 +10,11 @@ export type Shell = boolean | string
 export interface Options {
   cwd?: string
   env?: NodeJS.ProcessEnv | null
+  /**
+   * Merge the backend process environment underneath `env` (default true).
+   * Pass false with an explicit `env` to spawn with exactly that snapshot,
+   * so removals in the snapshot are preserved.
+   */
   extendEnv?: boolean
   stdin?: Stdio
   stdout?: Stdio
@@ -64,7 +69,7 @@ export function spawn(cmd: string[], opts: Options = {}): Child {
   const proc = launch(cmd[0], cmd.slice(1), {
     cwd: opts.cwd,
     shell: opts.shell,
-    env: opts.env === null ? {} : opts.env ? { ...(opts.extendEnv === false ? {} : process.env), ...opts.env } : undefined,
+    env: opts.env === null ? {} : opts.extendEnv === false ? { ...(opts.env ?? {}) } : opts.env ? { ...process.env, ...opts.env } : undefined,
     stdio: [opts.stdin ?? "ignore", opts.stdout ?? "ignore", opts.stderr ?? "ignore"],
     windowsHide: process.platform === "win32",
   })

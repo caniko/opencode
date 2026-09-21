@@ -40,21 +40,21 @@ const layer = Layer.effect(
       Effect.fn("Format.state")(function* (ctx) {
         const formatters: Record<string, Formatter.Info> = {}
 
-        async function getCommand(item: Formatter.Info) {
-          const env = await Direnv.environment(ctx.directory)
+        async function getCommand(item: Formatter.Info, env: NodeJS.ProcessEnv) {
           return item.enabled({ ...ctx, env, experimentalOxfmt: flags.experimentalOxfmt })
         }
 
         async function isEnabled(item: Formatter.Info) {
-          const cmd = await getCommand(item)
+          const cmd = await getCommand(item, await Direnv.environment(ctx.directory))
           return cmd !== false
         }
 
         async function getFormatter(ext: string) {
           const matching = Object.values(formatters).filter((item) => item.extensions.includes(ext))
+          const env = await Direnv.environment(ctx.directory)
           const checks = await Promise.all(
             matching.map(async (item) => {
-              const cmd = await getCommand(item)
+              const cmd = await getCommand(item, env)
               return {
                 item,
                 cmd,

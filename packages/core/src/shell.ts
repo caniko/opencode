@@ -28,6 +28,8 @@ export type Item = {
   acceptable: boolean
 }
 
+type Environment = { env: NodeJS.ProcessEnv; cwd: string }
+
 export async function killTree(proc: ChildProcess, opts?: { exited?: () => boolean }): Promise<void> {
   const pid = proc.pid
   if (!pid || opts?.exited?.()) return
@@ -63,15 +65,15 @@ function stat(file: string) {
   return statSync(file, { throwIfNoEntry: false }) ?? undefined
 }
 
-function full(file: string) {
+function full(file: string, context?: Environment) {
   if (process.platform !== "win32") return file
   const shell = FSUtil.windowsPath(file)
   if (path.win32.dirname(shell) !== ".") {
-    if (shell.startsWith("/") && name(shell) === "bash") return gitbash() || shell
+    if (shell.startsWith("/") && name(shell) === "bash") return gitbash(context) || shell
     return shell
   }
-  if (name(shell) === "bash") return gitbash() || which(shell) || shell
-  return which(shell) || shell
+  if (name(shell) === "bash") return gitbash(context) || which(shell, context?.env, context?.cwd) || shell
+  return which(shell, context?.env, context?.cwd) || shell
 }
 
 function meta(file: string) {
@@ -86,21 +88,26 @@ function rooted(file: string) {
   return path.isAbsolute(FSUtil.windowsPath(file))
 }
 
-function resolve(file: string) {
-  const shell = full(file)
+function resolve(file: string, context?: Environment) {
+  const shell = full(file, context)
   if (rooted(shell)) {
     if (stat(shell)?.isFile()) return shell
     return
   }
-  return which(shell) ?? undefined
+  return which(shell, context?.env, context?.cwd) ?? undefined
 }
 
-function win() {
+function win(context?: Environment) {
   return Array.from(
     new Set(
-      [which("pwsh"), which("powershell"), gitbash(), process.env.COMSPEC || "cmd.exe"]
+      [
+        which("pwsh", context?.env, context?.cwd),
+        which("powershell", context?.env, context?.cwd),
+        gitbash(context),
+        (context?.env ?? process.env).COMSPEC || "cmd.exe",
+      ]
         .filter((item): item is string => Boolean(item))
-        .map(full),
+        .map((file) => full(file, context)),
     ),
   )
 }
@@ -111,27 +118,27 @@ async function unix() {
   return ["/bin/bash", "/bin/zsh", "/bin/sh"]
 }
 
-function select(file: string | undefined, opts?: { acceptable?: boolean }) {
+function select(file: string | undefined, opts?: { acceptable?: boolean }, context?: Environment) {
   if (file && (!opts?.acceptable || ok(file))) {
-    const shell = resolve(file)
+    const shell = resolve(file, context)
     if (shell) return shell
   }
-  if (process.platform === "win32") return win()[0]
-  return fallback()
+  if (process.platform === "win32") return win(context)[0]
+  return fallback(context)
 }
 
-export function gitbash() {
+export function gitbash(context?: Environment) {
   if (process.platform !== "win32") return
   if (Flag.OPENCODE_GIT_BASH_PATH) return Flag.OPENCODE_GIT_BASH_PATH
-  const git = which("git")
+  const git = which("git", context?.env, context?.cwd)
   if (!git) return
   const file = path.join(git, "..", "..", "bin", "bash.exe")
   if (stat(file)?.size) return file
 }
 
-function fallback() {
+function fallback(context?: Environment) {
   if (process.platform === "darwin") return "/bin/zsh"
-  const bash = which("bash")
+  const bash = which("bash", context?.env, context?.cwd)
   if (bash) return bash
   return "/bin/sh"
 }
@@ -202,7 +209,8 @@ export function args(file: string, command: string, cwd: string) {
 let defaultPreferred: string | undefined
 let defaultAcceptable: string | undefined
 
-export function preferred(configShell?: string) {
+export function preferred(configShell?: string, context?: Environment) {
+  if (context) return select(configShell ?? context.env.SHELL, undefined, context)
   if (configShell) return select(configShell)
   defaultPreferred ??= select(process.env.SHELL)
   return defaultPreferred
@@ -211,7 +219,8 @@ preferred.reset = () => {
   defaultPreferred = undefined
 }
 
-export function acceptable(configShell?: string) {
+export function acceptable(configShell?: string, context?: Environment) {
+  if (context) return select(configShell ?? context.env.SHELL, { acceptable: true }, context)
   if (configShell) return select(configShell, { acceptable: true })
   defaultAcceptable ??= select(process.env.SHELL, { acceptable: true })
   return defaultAcceptable

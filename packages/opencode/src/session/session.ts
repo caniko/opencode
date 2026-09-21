@@ -30,6 +30,7 @@ import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
+import { LSP } from "../lsp/lsp"
 import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
 import { ProjectV2 } from "@opencode-ai/core/project"
@@ -652,6 +653,17 @@ const layer: Layer.Layer<
 
         yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
         yield* events.remove(sessionID)
+        // Best-effort: shut down language servers owned by this session so
+        // their processes do not outlive it. Skips silently without the LSP
+        // service or instance state; deletion must always proceed.
+        yield* Effect.serviceOption(LSP.Service).pipe(
+          Effect.flatMap((lsp) =>
+            Option.isSome(lsp)
+              ? lsp.value.releaseSession(sessionID).pipe(Effect.catchCause(() => Effect.void))
+              : Effect.void,
+          ),
+          Effect.catchCause(() => Effect.void),
+        )
       } catch (error) {
         yield* Effect.logError("failed to remove session", { sessionID, error })
       }

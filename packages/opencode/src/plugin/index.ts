@@ -288,10 +288,15 @@ const layer = Layer.effect(
     >(name: Name, input: Input, output: Output) {
       if (!name) return output
       const s = yield* InstanceState.get(state)
+      const caller = name === "shell.env" ? (input as { signal?: AbortSignal }).signal : undefined
       for (const hook of s.hooks) {
         const fn = hook[name] as any
         if (!fn) continue
-        yield* Effect.promise(async () => fn(input, output))
+        yield* Effect.promise(async (signal) => {
+          if (name === "shell.env")
+            (input as { signal?: AbortSignal }).signal = caller ? AbortSignal.any([caller, signal]) : signal
+          return fn(input, output)
+        })
       }
       return output
     })

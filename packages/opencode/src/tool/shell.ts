@@ -19,6 +19,7 @@ import { ShellID } from "./shell/id"
 
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
+import { shellEnvironment } from "@/plugin/shell-environment"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
@@ -440,16 +441,12 @@ export const ShellTool = Tool.define(
     })
 
     const shellEnv = Effect.fn("ShellTool.shellEnv")(function* (ctx: Tool.Context, cwd: string) {
-      const env = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
-      const extra = yield* plugin.trigger(
-        "shell.env",
-        { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
-        { env: {} },
+      const base = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
+      return yield* shellEnvironment(
+        plugin,
+        { cwd, sessionID: ctx.sessionID, callID: ctx.callID, signal: ctx.abort },
+        base,
       )
-      return {
-        ...env,
-        ...extra.env,
-      }
     })
 
     const run = Effect.fn("ShellTool.run")(function* (
@@ -695,14 +692,32 @@ export const ShellTool = Tool.define(
                 }),
               )
 
+              const environment = yield* shellEnv(ctx, cwd)
+              const executable = environment.resolved
+                ? Shell.acceptable(cfg.shell, { env: environment.env, cwd })
+                : shell
+              let processClass = scan.processClass
+              // Recheck permissions if environment resolution changes the command grammar.
+              if (Shell.ps(executable) !== ps) {
+                yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    const tree = yield* Effect.acquireRelease(parse(params.command, Shell.ps(executable)), (tree) =>
+                      Effect.sync(() => tree.delete()),
+                    )
+                    const checked = yield* collect(tree.rootNode, cwd, Shell.ps(executable), executable, instanceCtx)
+                    yield* ask(ctx, checked, params)
+                    if (checked.processClass === "heavy") processClass = "heavy"
+                  }),
+                )
+              }
               return yield* run(
                 {
-                  shell,
+                  shell: executable,
                   command: params.command,
                   cwd,
-                  env: yield* shellEnv(ctx, cwd),
+                  env: environment.env,
                   timeout,
-                  processClass: scan.processClass,
+                  processClass,
                 },
                 ctx,
               )

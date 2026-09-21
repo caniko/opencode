@@ -77,6 +77,20 @@ describe("util.process", () => {
     expect(out.stdout.toString()).toBe("set")
   })
 
+  test("extendEnv false spawns with exactly the given environment", async () => {
+    const marker = "OPENCODE_EXTEND_ENV_PROBE"
+    process.env[marker] = "backend-only"
+    try {
+      const out = await Process.run(node(`process.stdout.write(process.env.${marker} ?? "absent")`), {
+        env: { PATH: process.env.PATH ?? "" },
+        extendEnv: false,
+      })
+      expect(out.stdout.toString()).toBe("absent")
+    } finally {
+      delete process.env[marker]
+    }
+  })
+
   test("uses shell in run on Windows", async () => {
     if (process.platform !== "win32") return
 

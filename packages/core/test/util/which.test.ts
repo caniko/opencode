@@ -52,6 +52,17 @@ describe("util.which", () => {
       else process.env.PATH = previous
     }
   })
+  test("operation lookup resolves relative and empty PATH entries against cwd", async () => {
+    await using tmp = await tmpdir()
+    await fs.mkdir(path.join(tmp.path, "bin"))
+    const file = await cmd(path.join(tmp.path, "bin"), "operation-only")
+    same(which("operation-only", { PATH: "bin" }, tmp.path), file)
+    const local = await cmd(tmp.path, "cwd-only")
+    same(which("cwd-only", { PATH: "" }, tmp.path), local)
+    expect(which("cwd-only", {}, tmp.path)).toBeNull()
+    same(which("./cwd-only", {}, tmp.path), local)
+  })
+
   test("returns null when command is missing", () => {
     expect(which("opencode-missing-command-for-test")).toBeNull()
   })

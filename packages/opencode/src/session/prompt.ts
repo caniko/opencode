@@ -17,6 +17,7 @@ import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
+import { shellEnvironment } from "../plugin/shell-environment"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
@@ -515,8 +516,6 @@ const layer = Layer.effect(
           }).pipe(Effect.ensuring(markReady))
 
           const cfg = yield* config.get()
-          const sh = Shell.preferred(cfg.shell)
-          const args = Shell.args(sh, input.command, cwd)
           let output = ""
           let aborted = false
 
@@ -546,17 +545,23 @@ const layer = Layer.effect(
 
           const exit = yield* restore(
             Effect.gen(function* () {
-              const env = yield* Effect.tryPromise((signal) => Direnv.environment(cwd, process.env, signal))
-              const shellEnv = yield* plugin.trigger(
-                "shell.env",
-                { cwd, sessionID: input.sessionID, callID: part.callID },
-                { env: {} },
+              const base = yield* Effect.tryPromise((signal) => Direnv.environment(cwd, process.env, signal))
+              const environment = yield* shellEnvironment(
+                plugin,
+                {
+                  cwd,
+                  sessionID: input.sessionID,
+                  callID: part.callID,
+                },
+                base,
               )
+              const sh = Shell.preferred(cfg.shell, environment.resolved ? { env: environment.env, cwd } : undefined)
+              const args = Shell.args(sh, input.command, cwd)
               const cmd = ProcessGovernor.mark(
                 ChildProcess.make(sh, args, {
                   cwd,
-                    extendEnv: false,
-                    env: { ...env, ...shellEnv.env, TERM: "dumb" },
+                  extendEnv: false,
+                  env: { ...environment.env, TERM: "dumb" },
                   stdin: "ignore",
                   forceKillAfter: "3 seconds",
                 }),
@@ -835,7 +840,7 @@ const layer = Layer.effect(
                   let start = parseInt(range.start)
                   let end = range.end ? parseInt(range.end) : undefined
                   if (start === end) {
-                    const symbols = yield* lsp.documentSymbol(filePathURI).pipe(Effect.catch(() => Effect.succeed([])))
+                    const symbols = yield* lsp.documentSymbol(filePathURI, input.sessionID).pipe(Effect.catch(() => Effect.succeed([])))
                     for (const symbol of symbols) {
                       let r: LSP.Range | undefined
                       if ("range" in symbol) r = symbol.range

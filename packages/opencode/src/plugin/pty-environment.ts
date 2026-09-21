@@ -4,6 +4,7 @@ import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { Effect, Layer } from "effect"
 import { InstanceStore } from "@/project/instance-store"
 import { Plugin } from "."
+import { shellEnvironment } from "./shell-environment"
 
 export const layer = Layer.effect(
   PtyEnvironment.Service,
@@ -14,9 +15,7 @@ export const layer = Layer.effect(
       get: Effect.fn("PtyEnvironment.get")(function* (input) {
         return yield* instances.provide(
           { directory: input.directory },
-          plugin
-            .trigger("shell.env", { cwd: input.cwd }, { env: {} as Record<string, string> })
-            .pipe(Effect.map((result) => result.env)),
+          shellEnvironment(plugin, { cwd: input.cwd }, { ...process.env, ...input.env }),
         )
       }),
     })

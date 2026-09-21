@@ -268,8 +268,41 @@ export interface Hooks {
     output: { args: any },
   ) => Promise<void>
   "shell.env"?: (
-    input: { cwd: string; sessionID?: string; callID?: string },
-    output: { env: Record<string, string> },
+    input: {
+      cwd: string
+      sessionID?: string
+      callID?: string
+      /** Inherited snapshot, never the mutable process environment. */
+      env?: Readonly<Record<string, string>>
+      signal?: AbortSignal
+    },
+    output: {
+      env: Record<string, string>
+      /** Opt into per-operation lookup. Removals precede env assignments, so later overlays win. */
+      unset?: string[]
+    },
+  ) => Promise<void>
+  /**
+   * Resolve the environment for language-server lookup and spawn. Only
+   * plugins that explicitly implement this hook affect LSP processes;
+   * `shell.env` plugins are never consulted here. Hook failures fail the
+   * LSP operation. When `replace` is set, the child uses `env` exactly;
+   * otherwise `unset` removals apply to the inherited snapshot first and
+   * `env` overlays it.
+   */
+  "lsp.env"?: (
+    input: {
+      cwd: string
+      sessionID?: string
+      /** Inherited snapshot, never the mutable process environment. */
+      env?: Readonly<Record<string, string>>
+      signal?: AbortSignal
+    },
+    output: {
+      env: Record<string, string>
+      unset?: string[]
+      replace?: boolean
+    },
   ) => Promise<void>
   "tool.execute.after"?: (
     input: { tool: string; sessionID: string; callID: string; args: any },

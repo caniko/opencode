@@ -10,6 +10,7 @@ import { EventV2 } from "./event"
 import { Location } from "./location"
 import { PtyID } from "./pty/schema"
 import { Shell } from "./shell"
+import { which } from "./util/which"
 import { lazy } from "./util/lazy"
 
 const BUFFER_LIMIT = 1024 * 1024 * 2
@@ -43,6 +44,9 @@ export type Info = Types.DeepMutable<typeof Info.Type>
 export const CreateInput = Pty.CreateInput
 
 export type CreateInput = Types.DeepMutable<typeof CreateInput.Type>
+
+// Internal handoff only: the public PTY request env remains an inherited overlay.
+export type Environment = { env: NodeJS.ProcessEnv; resolved: boolean }
 
 export const UpdateInput = Pty.UpdateInput
 
@@ -81,7 +85,7 @@ export class ExitedError extends Schema.TaggedErrorClass<ExitedError>()("Pty.Exi
 export interface Interface {
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: PtyID) => Effect.Effect<Info, NotFoundError>
-  readonly create: (input: CreateInput) => Effect.Effect<Info>
+  readonly create: (input: CreateInput, environment?: Environment) => Effect.Effect<Info>
   readonly update: (id: PtyID, input: UpdateInput) => Effect.Effect<Info, NotFoundError>
   readonly remove: (id: PtyID) => Effect.Effect<void, NotFoundError>
   readonly write: (id: PtyID, data: string) => Effect.Effect<void, NotFoundError>
@@ -163,26 +167,34 @@ const layer = Layer.effect(
       return (yield* requireSession(id)).info
     })
 
-    const create = Effect.fn("Pty.create")(function* (input: CreateInput) {
+    const create = Effect.fn("Pty.create")(function* (input: CreateInput, environment?: Environment) {
       const id = PtyID.ascending()
-      const command = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
-      const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
       const cwd = input.cwd || location.directory
-      const projectEnv = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
+      const base = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
       const env = {
-        ...projectEnv,
-        ...input.env,
+        ...base,
+        ...(environment?.env ?? input.env),
+      }
+      const context = environment?.resolved ? { env, cwd } : undefined
+      const selected = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"), context)
+      const command = context && input.command ? which(selected, env, cwd) : selected
+      if (!command) throw new Error("PTY executable is unavailable in the operation environment")
+      const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
+      const resolvedEnv = {
+        ...env,
         TERM: "xterm-256color",
         OPENCODE_TERMINAL: "1",
       } as Record<string, string>
       if (process.platform === "win32") {
-        env.LC_ALL = "C.UTF-8"
-        env.LC_CTYPE = "C.UTF-8"
-        env.LANG = "C.UTF-8"
+        resolvedEnv.LC_ALL = "C.UTF-8"
+        resolvedEnv.LC_CTYPE = "C.UTF-8"
+        resolvedEnv.LANG = "C.UTF-8"
       }
       yield* Effect.logInfo("creating session", { id, cmd: command, args, cwd })
       const { spawn } = yield* Effect.promise(() => pty())
-      const proc = yield* Effect.sync(() => spawn(command, args, { name: "xterm-256color", cwd, env }))
+      const proc = yield* Effect.sync(() =>
+        spawn(command, args, { name: "xterm-256color", cwd, env: resolvedEnv, exactEnv: environment?.resolved }),
+      )
       const info: Info = {
         id,
         title: input.title || `Terminal ${id.slice(-4)}`,
