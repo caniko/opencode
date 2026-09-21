@@ -33,6 +33,149 @@ function global(payload: GlobalEvent["payload"]): GlobalEvent {
   return { directory: "/tmp/other", project: "proj_test", payload }
 }
 
+test("reconnect refreshes loaded history without overwriting concurrent live updates", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+  const response = Promise.withResolvers<Response>()
+  let requests = 0
+  const snapshot = (text: string) =>
+    json([{ info: assistant, parts: [{ id: partID, sessionID, messageID, type: "text", text }] }])
+  const { app, emit, sync } = await mount((url) => {
+    if (url.pathname === `/session/${sessionID}`) return json(session)
+    if (url.pathname === `/session/${sessionID}/message`) return ++requests === 1 ? snapshot("old") : response.promise
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
+  }, tmp.path)
+  try {
+    emit(global({ id: "evt_connected", type: "server.connected", properties: {} }))
+    await sync.session.sync(sessionID)
+    emit(global({ id: "evt_reconnected", type: "server.connected", properties: {} }))
+    await wait(() => requests === 2)
+    expect(sync.stale).toBe(true)
+    emit(
+      global({
+        id: "evt_live",
+        type: "message.part.updated",
+        properties: { sessionID, time: 3, part: { id: partID, sessionID, messageID, type: "text", text: "live" } },
+      }),
+    )
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "live")
+    response.resolve(snapshot("missed while disconnected"))
+    await wait(() => !sync.stale)
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: "live" })
+    expect(requests).toBe(2)
+  } finally {
+    response.resolve(json([]))
+    app.renderer.destroy()
+  }
+})
+
+test("failed reconnect hydration retains history and retries instead of marking it synced", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+  let fail = false
+  let requests = 0
+  const { app, emit, sync } = await mount((url) => {
+    if (url.pathname === `/session/${sessionID}`) return json(session)
+    if (url.pathname === `/session/${sessionID}/message`) {
+      requests++
+      return fail
+        ? json({}, { status: 500 })
+        : json([
+            {
+              info: assistant,
+              parts: [{ id: partID, sessionID, messageID, type: "text", text: requests === 1 ? "old" : "recovered" }],
+            },
+          ])
+    }
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
+  }, tmp.path)
+  try {
+    emit(global({ id: "evt_connected", type: "server.connected", properties: {} }))
+    await sync.session.sync(sessionID)
+    fail = true
+    emit(global({ id: "evt_reconnected", type: "server.connected", properties: {} }))
+    await wait(() => requests === 2)
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: "old" })
+    expect(sync.stale).toBe(true)
+    fail = false
+    await wait(() => !sync.stale, 4000)
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: "recovered" })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a reconnect during hydration waits for a fresh snapshot and coalesces refreshes", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+  const first = Promise.withResolvers<Response>()
+  let requests = 0
+  const { app, emit, sync } = await mount((url) => {
+    if (url.pathname === `/session/${sessionID}`) return json(session)
+    if (url.pathname === `/session/${sessionID}/message`)
+      return ++requests === 1
+        ? first.promise
+        : json([{ info: assistant, parts: [{ id: partID, sessionID, messageID, type: "text", text: "fresh" }] }])
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
+  }, tmp.path)
+  try {
+    emit(global({ id: "evt_connected", type: "server.connected", properties: {} }))
+    const hydration = sync.session.sync(sessionID)
+    await wait(() => requests === 1)
+    emit(global({ id: "evt_reconnected", type: "server.connected", properties: {} }))
+    emit(global({ id: "evt_reconnected_again", type: "server.connected", properties: {} }))
+    first.resolve(json([]))
+    await hydration
+    await wait(() => !sync.stale)
+    expect(requests).toBe(2)
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: "fresh" })
+  } finally {
+    first.resolve(json([]))
+    app.renderer.destroy()
+  }
+})
+
+test.each(["message.removed", "message.part.removed"] as const)(
+  "%s for unloaded history remains removed after hydration",
+  async (type) => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const response = Promise.withResolvers<Response>()
+    let requested = false
+    const { app, emit, sync } = await mount((url) => {
+      if (url.pathname === `/session/${sessionID}`) return json(session)
+      if (url.pathname === `/session/${sessionID}/message`) {
+        requested = true
+        return response.promise
+      }
+      if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`)
+        return json([])
+    }, tmp.path)
+    try {
+      const hydration = sync.session.sync(sessionID)
+      await wait(() => requested)
+      expect(() =>
+        emit(
+          global(
+            type === "message.removed"
+              ? { id: "evt_removed", type, properties: { sessionID, messageID } }
+              : { id: "evt_removed", type, properties: { sessionID, messageID, partID } },
+          ),
+        ),
+      ).not.toThrow()
+      response.resolve(
+        json([{ info: assistant, parts: [{ id: partID, sessionID, messageID, type: "text", text: "stale" }] }]),
+      )
+      await hydration
+      expect(sync.data.part[messageID] ?? []).toEqual([])
+      expect(sync.data.message[sessionID]).toHaveLength(type === "message.removed" ? 0 : 1)
+    } finally {
+      response.resolve(json([]))
+      app.renderer.destroy()
+    }
+  },
+)
+
 test("live messages use creation time with an ID tie-break", async () => {
   await using tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")

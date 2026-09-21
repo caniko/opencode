@@ -1294,6 +1294,9 @@ export function Session() {
                 </For>
               </scrollbox>
               <box flexShrink={0}>
+                <Show when={sync.stale}>
+                  <text fg={theme.warning}>Session updates are stale. Reconnecting or refreshing history...</text>
+                </Show>
                 <Show when={permissions().length > 0}>
                   <PermissionPrompt
                     request={permissions()[0]}
@@ -2220,7 +2223,9 @@ function Task(props: ToolProps) {
 
   onMount(() => {
     const sessionID = stringValue(props.metadata.sessionId)
-    if (sessionID && !sync.data.message[sessionID]?.length) void sync.session.sync(sessionID)
+    if (sessionID && !sync.data.message[sessionID]?.length) {
+      void sync.session.sync(sessionID).catch(() => console.error("tui subagent history refresh failed"))
+    }
   })
 
   const sessionID = createMemo(() => stringValue(props.metadata.sessionId))
