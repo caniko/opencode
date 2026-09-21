@@ -5,6 +5,7 @@ import { Process } from "@/util/process"
 import { which } from "@opencode-ai/core/util/which"
 
 export interface Context extends Pick<InstanceContext, "directory" | "worktree"> {
+  env?: NodeJS.ProcessEnv
   experimentalOxfmt: boolean
 }
 
@@ -18,8 +19,8 @@ export interface Info {
 export const gofmt: Info = {
   name: "gofmt",
   extensions: [".go"],
-  async enabled() {
-    const match = which("gofmt")
+  async enabled(context) {
+    const match = which("gofmt", context.env)
     if (!match) return false
     return [match, "-w", "$FILE"]
   },
@@ -28,8 +29,8 @@ export const gofmt: Info = {
 export const mix: Info = {
   name: "mix",
   extensions: [".ex", ".exs", ".eex", ".heex", ".leex", ".neex", ".sface"],
-  async enabled() {
-    const match = which("mix")
+  async enabled(context) {
+    const match = which("mix", context.env)
     if (!match) return false
     return [match, "format", "$FILE"]
   },
@@ -156,8 +157,8 @@ export const biome: Info = {
 export const zig: Info = {
   name: "zig",
   extensions: [".zig", ".zon"],
-  async enabled() {
-    const match = which("zig")
+  async enabled(context) {
+    const match = which("zig", context.env)
     if (!match) return false
     return [match, "fmt", "$FILE"]
   },
@@ -169,7 +170,7 @@ export const clang: Info = {
   async enabled(context) {
     const items = await Filesystem.findUp(".clang-format", context.directory, context.worktree)
     if (items.length > 0) {
-      const match = which("clang-format")
+      const match = which("clang-format", context.env)
       if (match) return [match, "-i", "$FILE"]
     }
     return false
@@ -179,8 +180,8 @@ export const clang: Info = {
 export const ktlint: Info = {
   name: "ktlint",
   extensions: [".kt", ".kts"],
-  async enabled() {
-    const match = which("ktlint")
+  async enabled(context) {
+    const match = which("ktlint", context.env)
     if (!match) return false
     return [match, "-F", "$FILE"]
   },
@@ -190,7 +191,7 @@ export const ruff: Info = {
   name: "ruff",
   extensions: [".py", ".pyi"],
   async enabled(context) {
-    if (!which("ruff")) return false
+    if (!which("ruff", context.env)) return false
     const configs = ["pyproject.toml", "ruff.toml", ".ruff.toml"]
     for (const config of configs) {
       const found = await Filesystem.findUp(config, context.directory, context.worktree)
@@ -218,11 +219,11 @@ export const ruff: Info = {
 export const rlang: Info = {
   name: "air",
   extensions: [".R"],
-  async enabled() {
-    const air = which("air")
+  async enabled(context) {
+    const air = which("air", context.env)
     if (air == null) return false
 
-    const output = await Process.text([air, "--help"], { nothrow: true })
+    const output = await Process.text([air, "--help"], { nothrow: true, env: context.env, extendEnv: false })
 
     // Check for "Air: An R language server and formatter"
     const firstLine = output.text.split("\n")[0]
@@ -238,9 +239,9 @@ export const uvformat: Info = {
   extensions: [".py", ".pyi"],
   async enabled(context) {
     if (await ruff.enabled(context)) return false
-    const uv = which("uv")
+    const uv = which("uv", context.env)
     if (uv == null) return false
-    const output = await Process.run([uv, "format", "--help"], { nothrow: true })
+    const output = await Process.run([uv, "format", "--help"], { nothrow: true, env: context.env, extendEnv: false })
     if (output.code === 0) return [uv, "format", "--", "$FILE"]
     return false
   },
@@ -249,8 +250,8 @@ export const uvformat: Info = {
 export const rubocop: Info = {
   name: "rubocop",
   extensions: [".rb", ".rake", ".gemspec", ".ru"],
-  async enabled() {
-    const match = which("rubocop")
+  async enabled(context) {
+    const match = which("rubocop", context.env)
     if (!match) return false
     return [match, "--autocorrect", "$FILE"]
   },
@@ -259,8 +260,8 @@ export const rubocop: Info = {
 export const standardrb: Info = {
   name: "standardrb",
   extensions: [".rb", ".rake", ".gemspec", ".ru"],
-  async enabled() {
-    const match = which("standardrb")
+  async enabled(context) {
+    const match = which("standardrb", context.env)
     if (!match) return false
     return [match, "--fix", "$FILE"]
   },
@@ -269,8 +270,8 @@ export const standardrb: Info = {
 export const htmlbeautifier: Info = {
   name: "htmlbeautifier",
   extensions: [".erb", ".html.erb"],
-  async enabled() {
-    const match = which("htmlbeautifier")
+  async enabled(context) {
+    const match = which("htmlbeautifier", context.env)
     if (!match) return false
     return [match, "$FILE"]
   },
@@ -279,8 +280,8 @@ export const htmlbeautifier: Info = {
 export const dart: Info = {
   name: "dart",
   extensions: [".dart"],
-  async enabled() {
-    const match = which("dart")
+  async enabled(context) {
+    const match = which("dart", context.env)
     if (!match) return false
     return [match, "format", "$FILE"]
   },
@@ -290,7 +291,7 @@ export const ocamlformat: Info = {
   name: "ocamlformat",
   extensions: [".ml", ".mli"],
   async enabled(context) {
-    if (!which("ocamlformat")) return false
+    if (!which("ocamlformat", context.env)) return false
     const items = await Filesystem.findUp(".ocamlformat", context.directory, context.worktree)
     if (items.length > 0) return ["ocamlformat", "-i", "$FILE"]
     return false
@@ -300,8 +301,8 @@ export const ocamlformat: Info = {
 export const terraform: Info = {
   name: "terraform",
   extensions: [".tf", ".tfvars"],
-  async enabled() {
-    const match = which("terraform")
+  async enabled(context) {
+    const match = which("terraform", context.env)
     if (!match) return false
     return [match, "fmt", "$FILE"]
   },
@@ -310,8 +311,8 @@ export const terraform: Info = {
 export const latexindent: Info = {
   name: "latexindent",
   extensions: [".tex"],
-  async enabled() {
-    const match = which("latexindent")
+  async enabled(context) {
+    const match = which("latexindent", context.env)
     if (!match) return false
     return [match, "-w", "-s", "$FILE"]
   },
@@ -320,8 +321,8 @@ export const latexindent: Info = {
 export const gleam: Info = {
   name: "gleam",
   extensions: [".gleam"],
-  async enabled() {
-    const match = which("gleam")
+  async enabled(context) {
+    const match = which("gleam", context.env)
     if (!match) return false
     return [match, "format", "$FILE"]
   },
@@ -330,8 +331,8 @@ export const gleam: Info = {
 export const shfmt: Info = {
   name: "shfmt",
   extensions: [".sh", ".bash"],
-  async enabled() {
-    const match = which("shfmt")
+  async enabled(context) {
+    const match = which("shfmt", context.env)
     if (!match) return false
     return [match, "-w", "$FILE"]
   },
@@ -340,8 +341,8 @@ export const shfmt: Info = {
 export const nixfmt: Info = {
   name: "nixfmt",
   extensions: [".nix"],
-  async enabled() {
-    const match = which("nixfmt")
+  async enabled(context) {
+    const match = which("nixfmt", context.env)
     if (!match) return false
     return [match, "$FILE"]
   },
@@ -350,8 +351,8 @@ export const nixfmt: Info = {
 export const rustfmt: Info = {
   name: "rustfmt",
   extensions: [".rs"],
-  async enabled() {
-    const match = which("rustfmt")
+  async enabled(context) {
+    const match = which("rustfmt", context.env)
     if (!match) return false
     return [match, "$FILE"]
   },
@@ -376,8 +377,8 @@ export const pint: Info = {
 export const ormolu: Info = {
   name: "ormolu",
   extensions: [".hs"],
-  async enabled() {
-    const match = which("ormolu")
+  async enabled(context) {
+    const match = which("ormolu", context.env)
     if (!match) return false
     return [match, "-i", "$FILE"]
   },
@@ -386,8 +387,8 @@ export const ormolu: Info = {
 export const cljfmt: Info = {
   name: "cljfmt",
   extensions: [".clj", ".cljs", ".cljc", ".edn"],
-  async enabled() {
-    const match = which("cljfmt")
+  async enabled(context) {
+    const match = which("cljfmt", context.env)
     if (!match) return false
     return [match, "fix", "--quiet", "$FILE"]
   },
@@ -396,8 +397,8 @@ export const cljfmt: Info = {
 export const dfmt: Info = {
   name: "dfmt",
   extensions: [".d"],
-  async enabled() {
-    const match = which("dfmt")
+  async enabled(context) {
+    const match = which("dfmt", context.env)
     if (!match) return false
     return [match, "-i", "$FILE"]
   },

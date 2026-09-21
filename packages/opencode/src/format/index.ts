@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Direnv } from "@opencode-ai/core/direnv"
 import { Effect, Layer, Context, Schema } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { ChildProcess } from "effect/unstable/process"
@@ -37,16 +38,11 @@ const layer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("Format.state")(function* (ctx) {
-        const commands: Record<string, string[] | false> = {}
         const formatters: Record<string, Formatter.Info> = {}
 
         async function getCommand(item: Formatter.Info) {
-          let cmd = commands[item.name]
-          if (cmd === false || cmd === undefined) {
-            cmd = await item.enabled({ ...ctx, experimentalOxfmt: flags.experimentalOxfmt })
-            commands[item.name] = cmd
-          }
-          return cmd
+          const env = await Direnv.environment(ctx.directory)
+          return item.enabled({ ...ctx, env, experimentalOxfmt: flags.experimentalOxfmt })
         }
 
         async function isEnabled(item: Formatter.Info) {
@@ -80,13 +76,14 @@ const layer = Layer.effect(
             for (const { item, cmd } of formatters) {
               yield* Effect.logInfo("running", { command: cmd })
               const replaced = cmd.map((x) => x.replace("$FILE", filepath))
-              const dir = yield* InstanceState.directory
+               const dir = yield* InstanceState.directory
+               const env = yield* Effect.promise((signal) => Direnv.environment(dir, process.env, signal))
               const result = yield* appProcess
                 .run(
                   ChildProcess.make(replaced[0]!, replaced.slice(1), {
                     cwd: dir,
-                    env: item.environment,
-                    extendEnv: true,
+                    env: { ...env, ...item.environment },
+                    extendEnv: false,
                     stdin: "ignore",
                     stdout: "ignore",
                     stderr: "ignore",

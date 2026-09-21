@@ -91,6 +91,14 @@ describe("util.process", () => {
     expect(out.stdout.toString()).toContain("OPENCODE_TEST_SHELL=ok")
   })
 
+  test("does not restore inherited variables in a complete child environment", async () => {
+    const out = await Process.run(node('process.stdout.write(JSON.stringify({ path: process.env.PATH, kept: process.env.ONLY }))'), {
+      env: { ONLY: "child" },
+      extendEnv: false,
+    })
+    expect(JSON.parse(out.stdout.toString())).toEqual({ kept: "child" })
+  })
+
   test("runs cmd scripts with spaces on Windows without shell", async () => {
     if (process.platform !== "win32") return
 

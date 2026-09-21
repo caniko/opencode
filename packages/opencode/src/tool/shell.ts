@@ -1,4 +1,5 @@
 import { Clock, Duration, Effect, Fiber, Scope, Stream } from "effect"
+import { Direnv } from "@opencode-ai/core/direnv"
 import os from "os"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -439,13 +440,14 @@ export const ShellTool = Tool.define(
     })
 
     const shellEnv = Effect.fn("ShellTool.shellEnv")(function* (ctx: Tool.Context, cwd: string) {
+      const env = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
       const extra = yield* plugin.trigger(
         "shell.env",
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
         { env: {} },
       )
       return {
-        ...process.env,
+        ...env,
         ...extra.env,
       }
     })

@@ -5,6 +5,7 @@ import type { Disp, Proc } from "#pty"
 import { Context, Effect, Layer, Schema, Types } from "effect"
 import { Pty } from "@opencode-ai/schema/pty"
 import { Config } from "./config"
+import { Direnv } from "./direnv"
 import { EventV2 } from "./event"
 import { Location } from "./location"
 import { PtyID } from "./pty/schema"
@@ -167,8 +168,9 @@ const layer = Layer.effect(
       const command = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
       const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
       const cwd = input.cwd || location.directory
+      const projectEnv = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
       const env = {
-        ...process.env,
+        ...projectEnv,
         ...input.env,
         TERM: "xterm-256color",
         OPENCODE_TERMINAL: "1",

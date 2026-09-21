@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Direnv } from "@opencode-ai/core/direnv"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -545,6 +546,7 @@ const layer = Layer.effect(
 
           const exit = yield* restore(
             Effect.gen(function* () {
+              const env = yield* Effect.tryPromise((signal) => Direnv.environment(cwd, process.env, signal))
               const shellEnv = yield* plugin.trigger(
                 "shell.env",
                 { cwd, sessionID: input.sessionID, callID: part.callID },
@@ -553,8 +555,8 @@ const layer = Layer.effect(
               const cmd = ProcessGovernor.mark(
                 ChildProcess.make(sh, args, {
                   cwd,
-                  extendEnv: true,
-                  env: { ...shellEnv.env, TERM: "dumb" },
+                    extendEnv: false,
+                    env: { ...env, ...shellEnv.env, TERM: "dumb" },
                   stdin: "ignore",
                   forceKillAfter: "3 seconds",
                 }),

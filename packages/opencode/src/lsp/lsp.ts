@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Direnv } from "@opencode-ai/core/direnv"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import * as LSPClient from "./client"
@@ -173,7 +174,8 @@ const layer = Layer.effect(
                 spawn: async (root) => ({
                   process: lspspawn(item.command[0], item.command.slice(1), {
                     cwd: root,
-                    env: { ...process.env, ...item.env },
+                    env: { ...(await Direnv.environment(root)), ...item.env },
+                    extendEnv: false,
                   }),
                   initialization: item.initialization,
                 }),

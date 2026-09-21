@@ -1,6 +1,7 @@
 export * as BashTool from "./bash"
 
 import path from "path"
+import { Direnv } from "../direnv"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Duration, Effect, Layer, Schema } from "effect"
 import { ChildProcess } from "effect/unstable/process"
@@ -156,9 +157,12 @@ const layer = Layer.effectDiscard(
               const shell =
                 Object.assign({}, ...entries.flatMap((entry) => (entry.type === "document" ? [entry.info] : [])))
                   .shell ?? defaultShell()
+              const env = yield* Effect.tryPromise((signal) => Direnv.environment(target.canonical, process.env, signal))
               const command = ProcessGovernor.mark(
                 ChildProcess.make(input.command, [], {
-                  cwd: target.canonical,
+                   cwd: target.canonical,
+                   env,
+                   extendEnv: false,
                   shell,
                   stdin: "ignore",
                   detached: process.platform !== "win32",

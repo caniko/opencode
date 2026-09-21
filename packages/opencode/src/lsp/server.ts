@@ -1,3 +1,4 @@
+import { Direnv } from "@opencode-ai/core/direnv"
 import type { ChildProcessWithoutNullStreams } from "child_process"
 import path from "path"
 import os from "os"
@@ -100,13 +101,16 @@ export const Deno: Info = {
   },
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"],
   async spawn(root) {
-    const deno = which("deno")
+    const projectEnv = await Direnv.environment(root)
+    const deno = which("deno", projectEnv)
     if (!deno) {
       return
     }
     return {
       process: spawn(deno, ["lsp"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -120,14 +124,16 @@ export const Typescript: Info = {
   ),
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
   async spawn(root, ctx) {
+    const projectEnv = await Direnv.environment(root)
     const tsserver = Module.resolve("typescript/lib/tsserver.js", ctx.directory)
     if (!tsserver) return
     const bin = await Npm.which("typescript-language-server")
     if (!bin) return
     const proc = spawn(bin, ["--stdio"], {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -146,7 +152,8 @@ export const Vue: Info = {
   extensions: [".vue"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
   async spawn(root, _ctx, flags) {
-    let binary = which("vue-language-server")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("vue-language-server", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -157,8 +164,9 @@ export const Vue: Info = {
     args.push("--stdio")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -175,6 +183,7 @@ export const ESLint: Info = {
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
   async spawn(root, ctx, flags) {
+    const projectEnv = await Direnv.environment(root)
     const eslint = Module.resolve("eslint", ctx.directory)
     if (!eslint) return
     const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
@@ -210,8 +219,9 @@ export const ESLint: Info = {
 
     const proc = spawn("node", [serverPath, "--stdio"], {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
 
@@ -234,6 +244,7 @@ export const Oxlint: Info = {
   ]),
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"],
   async spawn(root, ctx) {
+    const projectEnv = await Direnv.environment(root)
     const ext = process.platform === "win32" ? ".cmd" : ""
 
     const serverTarget = path.join("node_modules", ".bin", "oxc_language_server" + ext)
@@ -257,12 +268,12 @@ export const Oxlint: Info = {
 
     let lintBin = await resolveBin(lintTarget)
     if (!lintBin) {
-      const found = which("oxlint")
+      const found = which("oxlint", projectEnv)
       if (found) lintBin = found
     }
 
     if (lintBin) {
-      const proc = spawn(lintBin, ["--help"])
+      const proc = spawn(lintBin, ["--help"], { cwd: root, env: projectEnv, extendEnv: false })
       await proc.exited
       if (proc.stdout) {
         const help = await text(proc.stdout)
@@ -270,6 +281,8 @@ export const Oxlint: Info = {
           return {
             process: spawn(lintBin, ["--lsp"], {
               cwd: root,
+              extendEnv: false,
+              env: projectEnv,
             }),
           }
         }
@@ -278,13 +291,15 @@ export const Oxlint: Info = {
 
     let serverBin = await resolveBin(serverTarget)
     if (!serverBin) {
-      const found = which("oxc_language_server")
+      const found = which("oxc_language_server", projectEnv)
       if (found) serverBin = found
     }
     if (serverBin) {
       return {
         process: spawn(serverBin, [], {
           cwd: root,
+          extendEnv: false,
+          env: projectEnv,
         }),
       }
     }
@@ -324,11 +339,12 @@ export const Biome: Info = {
     ".html",
   ],
   async spawn(root) {
+    const projectEnv = await Direnv.environment(root)
     const localBin = path.join(root, "node_modules", ".bin", "biome")
     let bin: string | undefined
     if (await Filesystem.exists(localBin)) bin = localBin
     if (!bin) {
-      const found = which("biome")
+      const found = which("biome", projectEnv)
       if (found) bin = found
     }
 
@@ -344,8 +360,9 @@ export const Biome: Info = {
 
     const proc = spawn(bin, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
 
@@ -364,13 +381,15 @@ export const Gopls: Info = {
   },
   extensions: [".go"],
   async spawn(root, _ctx, flags) {
-    let bin = which("gopls")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("gopls", projectEnv)
     if (!bin) {
-      if (!which("go")) return
+      if (!which("go", projectEnv)) return
       if (flags.disableLspDownload) return
 
       const proc = Process.spawn(["go", "install", "golang.org/x/tools/gopls@latest"], {
-        env: { ...process.env, GOBIN: Global.Path.bin },
+        extendEnv: false,
+        env: { ...projectEnv, GOBIN: Global.Path.bin },
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
@@ -384,6 +403,8 @@ export const Gopls: Info = {
     return {
       process: spawn(bin!, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -394,15 +415,18 @@ export const Rubocop: Info = {
   root: NearestRoot(["Gemfile"]),
   extensions: [".rb", ".rake", ".gemspec", ".ru"],
   async spawn(root, _ctx, flags) {
-    let bin = which("rubocop")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("rubocop", projectEnv)
     if (!bin) {
-      const ruby = which("ruby")
-      const gem = which("gem")
+      const ruby = which("ruby", projectEnv)
+      const gem = which("gem", projectEnv)
       if (!ruby || !gem) {
         return
       }
       if (flags.disableLspDownload) return
       const proc = Process.spawn(["gem", "install", "rubocop", "--bindir", Global.Path.bin], {
+        env: projectEnv,
+        extendEnv: false,
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
@@ -416,6 +440,8 @@ export const Rubocop: Info = {
     return {
       process: spawn(bin!, ["--lsp"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -434,15 +460,16 @@ export const Ty: Info = {
     "pyrightconfig.json",
   ]),
   async spawn(root, _ctx, flags) {
+    const projectEnv = await Direnv.environment(root)
     if (!flags.experimentalLspTy) {
       return undefined
     }
 
-    let binary = which("ty")
+    let binary = which("ty", projectEnv)
 
     const initialization: Record<string, string> = {}
 
-    const potentialVenvPaths = [process.env["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
+    const potentialVenvPaths = [projectEnv["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
       (p): p is string => p !== undefined,
     )
     for (const venvPath of potentialVenvPaths) {
@@ -473,6 +500,8 @@ export const Ty: Info = {
 
     const proc = spawn(binary, ["server"], {
       cwd: root,
+      extendEnv: false,
+      env: projectEnv,
     })
 
     return {
@@ -487,7 +516,8 @@ export const Pyright: Info = {
   extensions: [".py", ".pyi"],
   root: NearestRoot(["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]),
   async spawn(root, _ctx, flags) {
-    let binary = which("pyright-langserver")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("pyright-langserver", projectEnv)
     const args = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -499,7 +529,7 @@ export const Pyright: Info = {
 
     const initialization: Record<string, string> = {}
 
-    const potentialVenvPaths = [process.env["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
+    const potentialVenvPaths = [projectEnv["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
       (p): p is string => p !== undefined,
     )
     for (const venvPath of potentialVenvPaths) {
@@ -515,8 +545,9 @@ export const Pyright: Info = {
 
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -531,7 +562,8 @@ export const ElixirLS: Info = {
   extensions: [".ex", ".exs"],
   root: NearestRoot(["mix.exs", "mix.lock"]),
   async spawn(root, _ctx, flags) {
-    let binary = which("elixir-ls")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("elixir-ls", projectEnv)
     if (!binary) {
       const elixirLsPath = path.join(Global.Path.bin, "elixir-ls")
       binary = path.join(
@@ -542,7 +574,7 @@ export const ElixirLS: Info = {
       )
 
       if (!(await Filesystem.exists(binary))) {
-        const elixir = which("elixir")
+        const elixir = which("elixir", projectEnv)
         if (!elixir) {
           return
         }
@@ -567,7 +599,7 @@ export const ElixirLS: Info = {
         })
 
         const cwd = path.join(Global.Path.bin, "elixir-ls-master")
-        const env = { MIX_ENV: "prod", ...process.env }
+        const env = { MIX_ENV: "prod", ...projectEnv }
         await Process.run(["mix", "deps.get"], { cwd, env })
         await Process.run(["mix", "compile"], { cwd, env })
         await Process.run(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env })
@@ -577,6 +609,8 @@ export const ElixirLS: Info = {
     return {
       process: spawn(binary, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -587,10 +621,11 @@ export const Zls: Info = {
   extensions: [".zig", ".zon"],
   root: NearestRoot(["build.zig"]),
   async spawn(root, _ctx, flags) {
-    let bin = which("zls")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("zls", projectEnv)
 
     if (!bin) {
-      const zig = which("zig")
+      const zig = which("zig", projectEnv)
       if (!zig) {
         return
       }
@@ -679,6 +714,8 @@ export const Zls: Info = {
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -689,12 +726,15 @@ export const CSharp: Info = {
   root: NearestRoot([".slnx", ".sln", ".csproj", "global.json"]),
   extensions: [".cs", ".csx"],
   async spawn(root, _ctx, flags) {
-    const bin = await getRoslynLanguageServer(flags.disableLspDownload)
+    const projectEnv = await Direnv.environment(root)
+    const bin = await getRoslynLanguageServer(flags.disableLspDownload, projectEnv)
     if (!bin) return
 
     return {
       process: spawn(bin, ["--stdio", "--autoLoadProjects"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -705,10 +745,11 @@ export const Razor: Info = {
   root: NearestRoot([".slnx", ".sln", ".csproj", "global.json"]),
   extensions: [".razor", ".cshtml"],
   async spawn(root, _ctx, flags) {
-    const bin = await getRoslynLanguageServer(flags.disableLspDownload)
+    const projectEnv = await Direnv.environment(root)
+    const bin = await getRoslynLanguageServer(flags.disableLspDownload, projectEnv)
     if (!bin) return
 
-    const razor = await findVscodeRazorExtension()
+    const razor = await findVscodeRazorExtension(projectEnv)
     if (!razor) {
       return
     }
@@ -726,6 +767,8 @@ export const Razor: Info = {
         ],
         {
           cwd: root,
+          extendEnv: false,
+          env: projectEnv,
         },
       ),
     }
@@ -734,8 +777,8 @@ export const Razor: Info = {
 
 let roslynLanguageServerInstall: Promise<string | undefined> | undefined
 
-async function getRoslynLanguageServer(disableLspDownload: boolean) {
-  const existing = which("roslyn-language-server")
+async function getRoslynLanguageServer(disableLspDownload: boolean, projectEnv: NodeJS.ProcessEnv) {
+  const existing = which("roslyn-language-server", projectEnv)
   if (existing) return existing
 
   const global = await roslynLanguageServerGlobalPath()
@@ -784,9 +827,9 @@ async function roslynLanguageServerGlobalPath() {
   return (await pathExists(bin)) ? bin : undefined
 }
 
-async function findVscodeRazorExtension() {
+async function findVscodeRazorExtension(projectEnv: NodeJS.ProcessEnv) {
   const roots = [
-    process.env.VSCODE_EXTENSIONS,
+    projectEnv.VSCODE_EXTENSIONS,
     path.join(os.homedir(), ".vscode", "extensions"),
     path.join(os.homedir(), ".vscode-insiders", "extensions"),
     path.join(os.homedir(), ".vscode-server", "extensions"),
@@ -825,14 +868,17 @@ export const FSharp: Info = {
   root: NearestRoot([".slnx", ".sln", ".fsproj", "global.json"]),
   extensions: [".fs", ".fsi", ".fsx", ".fsscript"],
   async spawn(root, _ctx, flags) {
-    let bin = which("fsautocomplete")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("fsautocomplete", projectEnv)
     if (!bin) {
-      if (!which("dotnet")) {
+      if (!which("dotnet", projectEnv)) {
         return
       }
 
       if (flags.disableLspDownload) return
       const proc = Process.spawn(["dotnet", "tool", "install", "fsautocomplete", "--tool-path", Global.Path.bin], {
+        env: projectEnv,
+        extendEnv: false,
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
@@ -848,6 +894,8 @@ export const FSharp: Info = {
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -858,20 +906,23 @@ export const SourceKit: Info = {
   extensions: [".swift", ".objc", "objcpp"],
   root: NearestRoot(["Package.swift", "*.xcodeproj", "*.xcworkspace"]),
   async spawn(root) {
+    const projectEnv = await Direnv.environment(root)
     // Check if sourcekit-lsp is available in the PATH
     // This is installed with the Swift toolchain
-    const sourcekit = which("sourcekit-lsp")
+    const sourcekit = which("sourcekit-lsp", projectEnv)
     if (sourcekit) {
       return {
         process: spawn(sourcekit, {
           cwd: root,
+          extendEnv: false,
+          env: projectEnv,
         }),
       }
     }
 
     // If sourcekit-lsp not found, check if xcrun is available
     // This is specific to macOS where sourcekit-lsp is typically installed with Xcode
-    if (!which("xcrun")) return
+    if (!which("xcrun", projectEnv)) return
 
     const lspLoc = await output(["xcrun", "--find", "sourcekit-lsp"])
 
@@ -882,6 +933,8 @@ export const SourceKit: Info = {
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -920,13 +973,16 @@ export const RustAnalyzer: Info = {
   },
   extensions: [".rs"],
   async spawn(root) {
-    const bin = which("rust-analyzer")
+    const projectEnv = await Direnv.environment(root)
+    const bin = which("rust-analyzer", projectEnv)
     if (!bin) {
       return
     }
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -937,12 +993,15 @@ export const Clangd: Info = {
   root: NearestRoot(["compile_commands.json", "compile_flags.txt", ".clangd"]),
   extensions: [".c", ".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx", ".h++"],
   async spawn(root, _ctx, flags) {
+    const projectEnv = await Direnv.environment(root)
     const args = ["--background-index", "--clang-tidy"]
-    const fromPath = which("clangd")
+    const fromPath = which("clangd", projectEnv)
     if (fromPath) {
       return {
         process: spawn(fromPath, args, {
           cwd: root,
+          extendEnv: false,
+          env: projectEnv,
         }),
       }
     }
@@ -953,6 +1012,8 @@ export const Clangd: Info = {
       return {
         process: spawn(direct, args, {
           cwd: root,
+          extendEnv: false,
+          env: projectEnv,
         }),
       }
     }
@@ -966,6 +1027,8 @@ export const Clangd: Info = {
         return {
           process: spawn(candidate, args, {
             cwd: root,
+            extendEnv: false,
+            env: projectEnv,
           }),
         }
       }
@@ -1061,6 +1124,8 @@ export const Clangd: Info = {
     return {
       process: spawn(bin, args, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1071,7 +1136,8 @@ export const Svelte: Info = {
   extensions: [".svelte"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
   async spawn(root, _ctx, flags) {
-    let binary = which("svelteserver")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("svelteserver", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -1082,8 +1148,9 @@ export const Svelte: Info = {
     args.push("--stdio")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -1098,13 +1165,14 @@ export const Astro: Info = {
   extensions: [".astro"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
   async spawn(root, ctx, flags) {
+    const projectEnv = await Direnv.environment(root)
     const tsserver = Module.resolve("typescript/lib/tsserver.js", ctx.directory)
     if (!tsserver) {
       return
     }
     const tsdk = path.dirname(tsserver)
 
-    let binary = which("astro-ls")
+    let binary = which("astro-ls", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -1115,8 +1183,9 @@ export const Astro: Info = {
     args.push("--stdio")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -1186,7 +1255,8 @@ export const JDTLS: Info = {
   },
   extensions: [".java"],
   async spawn(root, _ctx, flags) {
-    const java = which("java")
+    const projectEnv = await Direnv.environment(root)
+    const java = which("java", projectEnv)
     if (!java) {
       return
     }
@@ -1264,6 +1334,8 @@ export const JDTLS: Info = {
         ],
         {
           cwd: root,
+          extendEnv: false,
+          env: projectEnv,
         },
       ),
     }
@@ -1287,6 +1359,7 @@ export const KotlinLS: Info = {
     return NearestRoot(["pom.xml"])(file, ctx)
   },
   async spawn(root, _ctx, flags) {
+    const projectEnv = await Direnv.environment(root)
     const distPath = path.join(Global.Path.bin, "kotlin-ls")
     const launcherScript =
       process.platform === "win32" ? path.join(distPath, "kotlin-lsp.cmd") : path.join(distPath, "kotlin-lsp.sh")
@@ -1353,6 +1426,8 @@ export const KotlinLS: Info = {
     return {
       process: spawn(launcherScript, ["--stdio"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1363,7 +1438,8 @@ export const YamlLS: Info = {
   extensions: [".yaml", ".yml"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
   async spawn(root, _ctx, flags) {
-    let binary = which("yaml-language-server")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("yaml-language-server", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -1374,8 +1450,9 @@ export const YamlLS: Info = {
     args.push("--stdio")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -1397,7 +1474,8 @@ export const LuaLS: Info = {
   ]),
   extensions: [".lua"],
   async spawn(root, _ctx, flags) {
-    let bin = which("lua-language-server")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("lua-language-server", projectEnv)
 
     if (!bin) {
       if (flags.disableLspDownload) return
@@ -1507,6 +1585,8 @@ export const LuaLS: Info = {
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1517,7 +1597,8 @@ export const PHPIntelephense: Info = {
   extensions: [".php"],
   root: NearestRoot(["composer.json", "composer.lock", ".php-version"]),
   async spawn(root, _ctx, flags) {
-    let binary = which("intelephense")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("intelephense", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -1528,8 +1609,9 @@ export const PHPIntelephense: Info = {
     args.push("--stdio")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -1548,13 +1630,16 @@ export const Prisma: Info = {
   extensions: [".prisma"],
   root: NearestRoot(["schema.prisma", "prisma/schema.prisma", "prisma"], ["package.json"]),
   async spawn(root) {
-    const prisma = which("prisma")
+    const projectEnv = await Direnv.environment(root)
+    const prisma = which("prisma", projectEnv)
     if (!prisma) {
       return
     }
     return {
       process: spawn(prisma, ["language-server"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1565,13 +1650,16 @@ export const Dart: Info = {
   extensions: [".dart"],
   root: NearestRoot(["pubspec.yaml", "analysis_options.yaml"]),
   async spawn(root) {
-    const dart = which("dart")
+    const projectEnv = await Direnv.environment(root)
+    const dart = which("dart", projectEnv)
     if (!dart) {
       return
     }
     return {
       process: spawn(dart, ["language-server", "--lsp"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1582,13 +1670,16 @@ export const Ocaml: Info = {
   extensions: [".ml", ".mli"],
   root: NearestRoot(["dune-project", "dune-workspace", ".merlin", "opam"]),
   async spawn(root) {
-    const bin = which("ocamllsp")
+    const projectEnv = await Direnv.environment(root)
+    const bin = which("ocamllsp", projectEnv)
     if (!bin) {
       return
     }
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1598,7 +1689,8 @@ export const BashLS: Info = {
   extensions: [".sh", ".bash", ".zsh", ".ksh"],
   root: async (_file, ctx) => ctx.directory,
   async spawn(root, _ctx, flags) {
-    let binary = which("bash-language-server")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("bash-language-server", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -1609,8 +1701,9 @@ export const BashLS: Info = {
     args.push("start")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -1624,7 +1717,8 @@ export const TerraformLS: Info = {
   extensions: [".tf", ".tfvars"],
   root: NearestRoot([".terraform.lock.hcl", "terraform.tfstate", "*.tf"]),
   async spawn(root, _ctx, flags) {
-    let bin = which("terraform-ls")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("terraform-ls", projectEnv)
 
     if (!bin) {
       if (flags.disableLspDownload) return
@@ -1681,6 +1775,8 @@ export const TerraformLS: Info = {
     return {
       process: spawn(bin, ["serve"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
       initialization: {
         experimentalFeatures: {
@@ -1697,7 +1793,8 @@ export const TexLab: Info = {
   extensions: [".tex", ".bib"],
   root: NearestRoot([".latexmkrc", "latexmkrc", ".texlabroot", "texlabroot"]),
   async spawn(root, _ctx, flags) {
-    let bin = which("texlab")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("texlab", projectEnv)
 
     if (!bin) {
       if (flags.disableLspDownload) return
@@ -1766,6 +1863,8 @@ export const TexLab: Info = {
     return {
       process: spawn(bin, {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1776,7 +1875,8 @@ export const DockerfileLS: Info = {
   extensions: [".dockerfile", "Dockerfile"],
   root: async (_file, ctx) => ctx.directory,
   async spawn(root, _ctx, flags) {
-    let binary = which("docker-langserver")
+    const projectEnv = await Direnv.environment(root)
+    let binary = which("docker-langserver", projectEnv)
     const args: string[] = []
     if (!binary) {
       if (flags.disableLspDownload) return
@@ -1787,8 +1887,9 @@ export const DockerfileLS: Info = {
     args.push("--stdio")
     const proc = spawn(binary, args, {
       cwd: root,
+      extendEnv: false,
       env: {
-        ...process.env,
+        ...projectEnv,
       },
     })
     return {
@@ -1802,13 +1903,16 @@ export const Gleam: Info = {
   extensions: [".gleam"],
   root: NearestRoot(["gleam.toml"]),
   async spawn(root) {
-    const gleam = which("gleam")
+    const projectEnv = await Direnv.environment(root)
+    const gleam = which("gleam", projectEnv)
     if (!gleam) {
       return
     }
     return {
       process: spawn(gleam, ["lsp"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1819,9 +1923,10 @@ export const Clojure: Info = {
   extensions: [".clj", ".cljs", ".cljc", ".edn"],
   root: NearestRoot(["deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn", "build.boot"]),
   async spawn(root) {
-    let bin = which("clojure-lsp")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("clojure-lsp", projectEnv)
     if (!bin && process.platform === "win32") {
-      bin = which("clojure-lsp.exe")
+      bin = which("clojure-lsp.exe", projectEnv)
     }
     if (!bin) {
       return
@@ -1829,6 +1934,8 @@ export const Clojure: Info = {
     return {
       process: spawn(bin, ["listen"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1849,15 +1956,17 @@ export const Nixd: Info = {
     return ctx.directory
   },
   async spawn(root) {
-    const nixd = which("nixd")
+    const projectEnv = await Direnv.environment(root)
+    const nixd = which("nixd", projectEnv)
     if (!nixd) {
       return
     }
     return {
       process: spawn(nixd, [], {
         cwd: root,
+        extendEnv: false,
         env: {
-          ...process.env,
+          ...projectEnv,
         },
       }),
     }
@@ -1869,15 +1978,17 @@ export const Pkl: Info = {
   extensions: [".pkl"],
   root: NearestRoot(["PklProject", "pkl.project", "pkl.toml", "flake.nix", ".git"]),
   async spawn(root) {
-    const pklLsp = which("pkl-lsp")
+    const projectEnv = await Direnv.environment(root)
+    const pklLsp = which("pkl-lsp", projectEnv)
     if (!pklLsp) {
       return
     }
     return {
       process: spawn(pklLsp, ["--stdio"], {
         cwd: root,
+        extendEnv: false,
         env: {
-          ...process.env,
+          ...projectEnv,
         },
       }),
     }
@@ -1889,7 +2000,8 @@ export const Tinymist: Info = {
   extensions: [".typ", ".typc"],
   root: NearestRoot(["typst.toml"]),
   async spawn(root, _ctx, flags) {
-    let bin = which("tinymist")
+    const projectEnv = await Direnv.environment(root)
+    let bin = which("tinymist", projectEnv)
 
     if (!bin) {
       if (flags.disableLspDownload) return
@@ -1973,13 +2085,16 @@ export const HLS: Info = {
   extensions: [".hs", ".lhs"],
   root: NearestRoot(["stack.yaml", "cabal.project", "hie.yaml", "*.cabal"]),
   async spawn(root) {
-    const bin = which("haskell-language-server-wrapper")
+    const projectEnv = await Direnv.environment(root)
+    const bin = which("haskell-language-server-wrapper", projectEnv)
     if (!bin) {
       return
     }
     return {
       process: spawn(bin, ["--lsp"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
@@ -1990,13 +2105,16 @@ export const JuliaLS: Info = {
   extensions: [".jl"],
   root: NearestRoot(["Project.toml", "Manifest.toml", "*.jl"]),
   async spawn(root) {
-    const julia = which("julia")
+    const projectEnv = await Direnv.environment(root)
+    const julia = which("julia", projectEnv)
     if (!julia) {
       return
     }
     return {
       process: spawn(julia, ["--startup-file=no", "--history-file=no", "-e", "using LanguageServer; runserver()"], {
         cwd: root,
+        extendEnv: false,
+        env: projectEnv,
       }),
     }
   },
