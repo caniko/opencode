@@ -477,7 +477,7 @@ process.stdin.on("data", (chunk) => {
             expect(JSON.stringify(first)).toContain("a-stub-hover")
             const seenA = yield* Effect.promise(() => readFile(a.marker, "utf8").catch(() => ""))
             expect(seenA).toContain("argv=--stdio")
-            expect(yield* lsp.status("reselect-session")).toHaveLength(1)
+            expect(yield* lsp.status()).toHaveLength(1)
             // Phase two: reselect shell B. The stale client must not be reused.
             const b = yield* makeStub("fast")
             process.env.PKL_STUB_DIR = b.stubDir
@@ -485,7 +485,7 @@ process.stdin.on("data", (chunk) => {
             expect(JSON.stringify(second)).toContain("fast-stub-hover")
             const seenB = yield* Effect.promise(() => readFile(b.marker, "utf8").catch(() => ""))
             expect(seenB).toContain("argv=--stdio")
-            expect(yield* lsp.status("reselect-session")).toHaveLength(1)
+            expect(yield* lsp.status()).toHaveLength(1)
           } finally {
             delete process.env.PKL_STUB_DIR
           }
@@ -619,7 +619,7 @@ process.stdin.on("data", (chunk) => {
             yield* lsp.hover(file, "doomed-session")
             expect(spy).toHaveBeenCalledTimes(1)
             yield* lsp.releaseSession("doomed-session")
-            expect(yield* lsp.status("doomed-session")).toEqual([])
+            expect(yield* lsp.status()).toEqual([])
             // A released session is dead: no client is ever spawned for it again.
             yield* lsp.hover(file, "doomed-session").pipe(Effect.catch(() => Effect.succeed([])))
             expect(spy).toHaveBeenCalledTimes(1)
@@ -698,15 +698,56 @@ process.stdin.on("data", (chunk) => {
             process.env.PKL_STUB_DIR = fastDir
             const second = yield* lsp.hover(file, "race-session")
             expect(JSON.stringify(second)).toContain("fast-stub-hover")
+            // The first operation started under the superseded selection: its
+            // client is dropped at registration instead of entering the pool.
             const firstResult = yield* Fiber.join(first)
-            // The first operation legitimately used its own selection.
-            expect(JSON.stringify(firstResult)).toContain("slow-stub-hover")
-            // Convergence: exactly one live client, no further spawns.
+            expect(firstResult).toEqual([])
+            // Convergence without another spawn: exactly one live client, and
+            // aggregate reads never touched the stale server.
             const after = yield* lsp.hover(file, "race-session")
             expect(JSON.stringify(after)).toContain("fast-stub-hover")
-            expect(yield* lsp.status("race-session")).toHaveLength(1)
+            expect(yield* lsp.status()).toHaveLength(1)
             const seenFast = yield* Effect.promise(() => readFile(fastMarker, "utf8"))
             expect(seenFast).toContain("argv=--stdio")
+            const partially = yield* lsp.diagnostics("race-session")
+            expect(Object.keys(partially)).toHaveLength(0)
+          } finally {
+            delete process.env.PKL_STUB_DIR
+          }
+        }),
+      ),
+    { config: { lsp: true } },
+  )
+
+  itProjectEnv.instance(
+    "aggregate reads retire stale servers without spawning",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = { file: path.join(dir, "config.pkl"), line: 0, character: 0 }
+          const oldDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-old-")))
+          const oldMarker = path.join(oldDir, "spawned.txt")
+          yield* writeStub(oldDir, oldMarker, "old-stub")
+          const newDir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "pkl-new-")))
+          const newMarker = path.join(newDir, "spawned.txt")
+          yield* writeStub(newDir, newMarker, "new-stub")
+          process.env.PKL_STUB_DIR = oldDir
+          try {
+            const first = yield* lsp.hover(file, "agg-session")
+            expect(JSON.stringify(first)).toContain("old-stub-hover")
+            expect(yield* lsp.status()).toHaveLength(1)
+            // Reselect, then read without touching any file: the stale
+            // server must be retired, and no new server started.
+            process.env.PKL_STUB_DIR = newDir
+            expect(yield* lsp.diagnostics("agg-session")).toEqual({})
+            expect(yield* lsp.status()).toHaveLength(0)
+            const untouched = yield* Effect.promise(() => readFile(newMarker, "utf8").catch(() => ""))
+            expect(untouched).toBe("")
+            // The next file operation spawns under the new selection.
+            const after = yield* lsp.hover(file, "agg-session")
+            expect(JSON.stringify(after)).toContain("new-stub-hover")
+            expect(yield* lsp.status()).toHaveLength(1)
           } finally {
             delete process.env.PKL_STUB_DIR
           }
@@ -731,7 +772,7 @@ process.stdin.on("data", (chunk) => {
             yield* Effect.sleep("300 millis")
             yield* lsp.releaseSession("midflight-session")
             const exit = yield* Fiber.join(pending)
-            expect(yield* lsp.status("midflight-session")).toEqual([])
+            expect(yield* lsp.status()).toEqual([])
             // The process did start (proves the race was real), but no
             // client survived the release.
             const seen = yield* Effect.promise(() => readFile(marker, "utf8").catch(() => ""))
