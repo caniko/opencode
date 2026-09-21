@@ -39,6 +39,19 @@ function same(a: string | null, b: string) {
 }
 
 describe("util.which", () => {
+  test("does not restore the backend PATH when a complete environment omits it", async () => {
+    await using tmp = await tmpdir()
+    await cmd(tmp.path, "opencode-direnv-path-only-test")
+    const previous = process.env.PATH
+    try {
+      process.env.PATH = tmp.path
+      expect(which("opencode-direnv-path-only-test")).not.toBeNull()
+      expect(which("opencode-direnv-path-only-test", {})).toBeNull()
+    } finally {
+      if (previous === undefined) delete process.env.PATH
+      else process.env.PATH = previous
+    }
+  })
   test("returns null when command is missing", () => {
     expect(which("opencode-missing-command-for-test")).toBeNull()
   })
