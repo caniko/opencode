@@ -287,8 +287,9 @@ describe("Format", () => {
           const file = `${test.directory}/test.redact`
           yield* Effect.promise(() => Bun.write(file, "x"))
           const messages: unknown[] = []
-          // One formatter fails to spawn, the other exits non-zero; both
-          // failure branches must redact configured environment values.
+          // One formatter fails to spawn, the other exits non-zero; each
+          // failure branch must log its own record naming the configured
+          // keys, and no record may carry the values.
           yield* fmt.file(file).pipe(
             Effect.provide(
               Logger.layer([
@@ -298,9 +299,16 @@ describe("Format", () => {
               ]),
             ),
           )
-          const dump = JSON.stringify(messages)
-          expect(dump).toContain("FORMATTER_TEST_SECRET")
-          expect(dump).not.toContain("s3cr3t-redact-me-9f8e7d6c")
+          const records = messages.filter(
+            (item): item is [string, ...unknown[]] => Array.isArray(item) && typeof item[0] === "string",
+          )
+          const spawnFailure = records.find((item) => item[0] === "failed to format file")
+          const exitFailure = records.find((item) => item[0] === "failed")
+          expect(spawnFailure).toBeDefined()
+          expect(exitFailure).toBeDefined()
+          expect(JSON.stringify(spawnFailure)).toContain("FORMATTER_TEST_SECRET")
+          expect(JSON.stringify(exitFailure)).toContain("FORMATTER_TEST_SECRET")
+          expect(JSON.stringify(messages)).not.toContain("s3cr3t-redact-me-9f8e7d6c")
         }),
       ),
     {
@@ -312,7 +320,7 @@ describe("Format", () => {
             extensions: [".redact"],
           },
           bust: {
-            command: ["false"],
+            command: ["node", "-e", "process.exit(3)"],
             environment: { FORMATTER_TEST_SECRET: "s3cr3t-redact-me-9f8e7d6c" },
             extensions: [".redact"],
           },
