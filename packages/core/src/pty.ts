@@ -170,9 +170,13 @@ const layer = Layer.effect(
     const create = Effect.fn("Pty.create")(function* (input: CreateInput, environment?: Environment) {
       const id = PtyID.ascending()
       const cwd = input.cwd || location.directory
-      const base = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
+      // A provided environment is already fully resolved (direnv base plus
+      // hook overlay applied once by the caller): use it intact so removals
+      // hold, with only explicit per-call overrides on top. Without one,
+      // layer caller overrides over a fresh direnv base here.
+      const base = environment ? undefined : yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
       const env = {
-        ...base,
+        ...(base ?? {}),
         ...(environment?.env ?? input.env),
       }
       const context = environment?.resolved ? { env, cwd } : undefined

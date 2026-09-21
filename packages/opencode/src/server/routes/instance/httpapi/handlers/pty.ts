@@ -3,6 +3,7 @@ import { registerDisposer } from "@/effect/instance-registry"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { Plugin } from "@/plugin"
 import { shellEnvironment } from "@/plugin/shell-environment"
+import { Direnv } from "@opencode-ai/core/direnv"
 import { Pty } from "@opencode-ai/core/pty"
 import { PtyProtocol } from "@opencode-ai/core/pty/protocol"
 import { PtyID } from "@opencode-ai/core/pty/schema"
@@ -69,7 +70,8 @@ export const ptyHandlers = HttpApiBuilder.group(InstanceHttpApi, "pty", (handler
 
     const create = Effect.fn("PtyHttpApi.create")(function* (ctx: { payload: typeof Pty.CreateInput.Type }) {
       const cwd = ctx.payload.cwd || (yield* InstanceState.context).directory
-      const environment = yield* shellEnvironment(plugin, { cwd }, { ...process.env, ...ctx.payload.env })
+      const base = yield* Effect.promise((signal) => Direnv.environment(cwd, process.env, signal))
+      const environment = yield* shellEnvironment(plugin, { cwd }, base)
       return yield* pty(
         Pty.Service.use((service) =>
           service.create(

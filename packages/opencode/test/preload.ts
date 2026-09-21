@@ -39,26 +39,6 @@ process.env["OPENCODE_MODELS_PATH"] = path.join(import.meta.dir, "tool", "fixtur
 process.env["OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 process.env["OPENCODE_EXPERIMENTAL_WORKSPACES"] = "true"
 
-// Shell-touching tests resolve the repository .envrc through direnv, whose
-// approval lives under XDG_DATA_HOME. Approve this checkout's .envrc inside
-// the isolated test dirs so tests see the same fail-closed base as
-// production. Best-effort: without a direnv binary those tests fail closed.
-try {
-  const rc = path.join(import.meta.dir, "..", "..", "..", ".envrc")
-  await fs.access(rc)
-  const { execFile } = await import("node:child_process")
-  await new Promise<void>((resolve) => {
-    execFile(
-      "direnv",
-      ["allow", rc],
-      { env: { ...process.env, XDG_DATA_HOME: path.join(dir, "share") }, timeout: 30_000 },
-      () => resolve(),
-    )
-  })
-} catch {
-  // No .envrc, no direnv binary, or approval refused: covered tests fail closed.
-}
-
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills
 const testHome = path.join(dir, "home")

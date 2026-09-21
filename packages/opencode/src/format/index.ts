@@ -61,15 +61,18 @@ const layer = Layer.effect(
               }
             }),
           )
-          return checks
-            .filter((x): x is { item: Formatter.Info; cmd: string[] } => x.cmd !== false)
-            .map((x) => ({ item: x.item, cmd: x.cmd }))
+          return {
+            env,
+            formatters: checks
+              .filter((x): x is { item: Formatter.Info; cmd: string[] } => x.cmd !== false)
+              .map((x) => ({ item: x.item, cmd: x.cmd })),
+          }
         }
 
         function formatFile(filepath: string) {
           return Effect.gen(function* () {
             yield* Effect.logInfo("formatting", { file: filepath })
-            const formatters = yield* Effect.promise(() => getFormatter(path.extname(filepath)))
+            const { env, formatters } = yield* Effect.promise(() => getFormatter(path.extname(filepath)))
 
             if (!formatters.length) return false
 
@@ -77,7 +80,6 @@ const layer = Layer.effect(
               yield* Effect.logInfo("running", { command: cmd })
               const replaced = cmd.map((x) => x.replace("$FILE", filepath))
                const dir = yield* InstanceState.directory
-               const env = yield* Effect.promise((signal) => Direnv.environment(dir, process.env, signal))
               const result = yield* appProcess
                 .run(
                   ChildProcess.make(replaced[0]!, replaced.slice(1), {

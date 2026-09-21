@@ -1,7 +1,8 @@
 import { NodeFileSystem } from "@effect/platform-node"
-import { describe, expect } from "bun:test"
+import { describe, expect, spyOn } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer } from "effect"
+import { Direnv } from "@opencode-ai/core/direnv"
 import { provideTmpdirInstance, testInstanceStoreLayer, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -227,6 +228,51 @@ describe("Format", () => {
               "$FILE",
             ],
             extensions: [".seq"],
+          },
+        },
+      },
+    },
+  )
+  it.instance(
+    "discovery and execution share one environment snapshot",
+    () =>
+      Format.Service.use((fmt) =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const file = `${test.directory}/test.snap`
+          yield* Effect.promise(() => Bun.write(file, "x"))
+          const spy = spyOn(Direnv, "environment")
+          try {
+            expect(yield* fmt.file(file)).toBe(true)
+            // One resolution serves both command discovery and execution;
+            // a second lookup could pair a different snapshot with the run.
+            expect(spy).toHaveBeenCalledTimes(1)
+            expect(yield* Effect.promise(() => Bun.file(file).text())).toBe("xAB")
+          } finally {
+            spy.mockRestore()
+          }
+        }),
+      ),
+    {
+      config: {
+        formatter: {
+          first: {
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + 'A')",
+              "$FILE",
+            ],
+            extensions: [".snap"],
+          },
+          second: {
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + 'B')",
+              "$FILE",
+            ],
+            extensions: [".snap"],
           },
         },
       },

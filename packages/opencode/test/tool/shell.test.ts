@@ -1,5 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { describe, expect } from "bun:test"
+import { describe, expect, afterAll } from "bun:test"
+import fs from "node:fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
@@ -86,7 +87,11 @@ const ctx = {
 Shell.acceptable.reset()
 const quote = (text: string) => `"${text}"`
 const squote = (text: string) => `'${text}'`
-const projectRoot = path.join(__dirname, "../..")
+// Hermetic working directory for tests that only need "a cwd": the
+// repository root carries a developer .envrc that must never load here
+// (direnv approval is fail-closed and the test sandbox isolates it).
+const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-shell-cwd-"))
+afterAll(() => fs.rm(emptyDir, { recursive: true, force: true }))
 const bin = quote(process.execPath.replaceAll("\\", "/"))
 const bash = (() => {
   const shell = Shell.acceptable()
@@ -189,7 +194,7 @@ const mustTruncate = (result: {
 describe("tool.shell", () => {
   each("basic", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const result = yield* run({
           command: "echo test",
@@ -274,7 +279,7 @@ describe("tool.shell permissions", () => {
       withShell(
         item,
         runIn(
-          projectRoot,
+          emptyDir,
           Effect.gen(function* () {
             const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
             yield* run(
@@ -326,7 +331,7 @@ describe("tool.shell permissions", () => {
 
   each("asks for external_directory permission for wildcard external paths", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const err = new Error("stop after permission")
         const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -356,7 +361,7 @@ describe("tool.shell permissions", () => {
             const outerTmp = yield* tmpdirScoped()
             yield* Effect.promise(() => Bun.write(path.join(outerTmp, "outside.txt"), "x"))
             yield* runIn(
-              projectRoot,
+              emptyDir,
               Effect.gen(function* () {
                 const file = path.join(outerTmp, "outside.txt").replaceAll("\\", "/")
                 const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -384,7 +389,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -410,7 +415,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
               const file = `${process.env.WINDIR!.replaceAll("\\", "/")}/win.ini`
@@ -466,7 +471,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -521,7 +526,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -555,7 +560,7 @@ describe("tool.shell permissions", () => {
             }),
             ({ key }) =>
               runIn(
-                projectRoot,
+                emptyDir,
                 Effect.gen(function* () {
                   const err = new Error("stop after permission")
                   const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -588,7 +593,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
               yield* run(
@@ -613,7 +618,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -641,7 +646,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -669,7 +674,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
               yield* run(
@@ -696,7 +701,7 @@ describe("tool.shell permissions", () => {
         withShell(
           item,
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
               yield* run(
@@ -721,7 +726,7 @@ describe("tool.shell permissions", () => {
       withShell(
         cmdShell,
         runIn(
-          projectRoot,
+          emptyDir,
           Effect.gen(function* () {
             const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
             yield* run(
@@ -827,7 +832,7 @@ describe("tool.shell permissions", () => {
         withShell(
           { label: "bash", shell: bash },
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -855,7 +860,7 @@ describe("tool.shell permissions", () => {
         withShell(
           { label: "bash", shell: bash },
           runIn(
-            projectRoot,
+            emptyDir,
             Effect.gen(function* () {
               const err = new Error("stop after permission")
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
@@ -1017,7 +1022,7 @@ describe("tool.shell abort", () => {
     "preserves output when aborted",
     () =>
       runIn(
-        projectRoot,
+        emptyDir,
         Effect.gen(function* () {
           const controller = new AbortController()
           const collected: string[] = []
@@ -1050,7 +1055,7 @@ describe("tool.shell abort", () => {
     "terminates command on timeout",
     () =>
       runIn(
-        projectRoot,
+        emptyDir,
         Effect.gen(function* () {
           const result = yield* run({
             command: `sleep 60`,
@@ -1067,7 +1072,7 @@ describe("tool.shell abort", () => {
     "uses RuntimeFlags bashDefaultTimeoutMs when timeout is omitted",
     () =>
       runIn(
-        projectRoot,
+        emptyDir,
         Effect.gen(function* () {
           const tool = yield* initShell()
           expect(tool.description).toContain("commands will time out after 500ms")
@@ -1086,7 +1091,7 @@ describe("tool.shell abort", () => {
   if (process.platform !== "win32") {
     it.live("captures stderr in output", () =>
       runIn(
-        projectRoot,
+        emptyDir,
         Effect.gen(function* () {
           const result = yield* run({
             command: `echo stdout_msg && echo stderr_msg >&2`,
@@ -1101,7 +1106,7 @@ describe("tool.shell abort", () => {
 
   it.live("returns non-zero exit code", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const result = yield* run({
           command: `exit 42`,
@@ -1113,7 +1118,7 @@ describe("tool.shell abort", () => {
 
   it.live("streams metadata updates progressively", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const updates: string[] = []
         const result = yield* run(
@@ -1138,7 +1143,7 @@ describe("tool.shell abort", () => {
 
   it.live("coalesces streaming metadata and flushes the final preview", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const updates: string[] = []
         const result = yield* run(
@@ -1161,7 +1166,7 @@ describe("tool.shell abort", () => {
 
   it.live("flushes output produced inside the throttle window on non-zero exit", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const updates: string[] = []
         const result = yield* run(
@@ -1185,7 +1190,7 @@ describe("tool.shell abort", () => {
     "flushes output produced inside the throttle window on timeout",
     () =>
       runIn(
-        projectRoot,
+        emptyDir,
         Effect.gen(function* () {
           const updates: string[] = []
           const result = yield* run(
@@ -1211,7 +1216,7 @@ describe("tool.shell abort", () => {
     "flushes output produced inside the throttle window on abort",
     () =>
       runIn(
-        projectRoot,
+        emptyDir,
         Effect.gen(function* () {
           const controller = new AbortController()
           const updates: string[] = []
@@ -1246,7 +1251,7 @@ describe("tool.shell abort", () => {
 describe("tool.shell truncation", () => {
   it.live("truncates output exceeding line limit", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const lineCount = Truncate.MAX_LINES + 500
         const result = yield* run({
@@ -1261,7 +1266,7 @@ describe("tool.shell truncation", () => {
 
   it.live("truncates output exceeding byte limit", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const byteCount = Truncate.MAX_BYTES + 10000
         const result = yield* run({
@@ -1276,7 +1281,7 @@ describe("tool.shell truncation", () => {
 
   it.live("does not truncate small output", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const result = yield* run({
           command: fill("lines", 1),
@@ -1289,7 +1294,7 @@ describe("tool.shell truncation", () => {
 
   it.live("full output is saved to file when truncated", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const lineCount = Truncate.MAX_LINES + 100
         const result = yield* run({
@@ -1313,7 +1318,7 @@ describe("tool.shell truncation", () => {
 
   it.live("flushes the final truncated preview without duplicates", () =>
     runIn(
-      projectRoot,
+      emptyDir,
       Effect.gen(function* () {
         const updates: string[] = []
         const result = yield* run(
@@ -1354,7 +1359,7 @@ describe("tool.shell truncation", () => {
       withToolOom(
         "999",
         runIn(
-          projectRoot,
+          emptyDir,
           Effect.gen(function* () {
             const parent = (yield* Effect.promise(() => Bun.file("/proc/self/oom_score_adj").text())).trim()
             const result = yield* run({
@@ -1371,7 +1376,7 @@ describe("tool.shell truncation", () => {
       withToolOom(
         "999",
         runIn(
-          projectRoot,
+          emptyDir,
           Effect.gen(function* () {
             const result = yield* run({
               command:
@@ -1388,7 +1393,7 @@ describe("tool.shell truncation", () => {
       withToolOom(
         "nope",
         runIn(
-          projectRoot,
+          emptyDir,
           Effect.gen(function* () {
             const err = yield* fail({ command: "echo hi" })
             expect(err.message).toContain("OPENCODE_TOOL_OOM_SCORE_ADJ")

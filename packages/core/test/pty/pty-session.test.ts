@@ -153,6 +153,33 @@ describe("pty", () => {
     }),
   )
 
+  ptyTest("does not restore removed variables into resolved environments", () =>
+    Effect.gen(function* () {
+      const pty = yield* Pty.Service
+      process.env.OPENCODE_PTY_PROBE = "backend-only"
+      try {
+        const info = yield* Effect.acquireRelease(
+          pty.create(
+            { command: "/usr/bin/env", args: [], cwd: "/tmp", env: {} },
+            { env: { PATH: "/usr/bin:/bin" }, resolved: true },
+          ),
+          (created) => pty.remove(created.id).pipe(Effect.ignore),
+        )
+        const seen = yield* attachCollecting(info.id)
+        const out = yield* waitForOutput(seen.output, "PATH=")
+        expect(out).not.toContain("OPENCODE_PTY_PROBE")
+        yield* Deferred.await(seen.ended).pipe(
+          Effect.timeoutOrElse({
+            duration: "5 seconds",
+            orElse: () => Effect.fail(new Error("timeout waiting for env dump exit")),
+          }),
+        )
+      } finally {
+        delete process.env.OPENCODE_PTY_PROBE
+      }
+    }),
+  )
+
   ptyTest("stops delivering output after detach", () =>
     Effect.gen(function* () {
       const pty = yield* Pty.Service

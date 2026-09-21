@@ -315,6 +315,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
       ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
         cwd,
         env,
+        extendEnv: false,
         stdin: "ignore",
         detached: false,
       }),
@@ -327,6 +328,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
       shell,
       cwd,
       env,
+      extendEnv: false,
       stdin: "ignore",
       detached: process.platform !== "win32",
     }),
