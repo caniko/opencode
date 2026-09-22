@@ -9,6 +9,7 @@ import { AgentV2 } from "./agent"
 import { SessionV2 } from "./session"
 import { SessionStore } from "./session/store"
 import { Wildcard } from "./util/wildcard"
+import { BashPermission } from "./util/bash-permission"
 import { PermissionSaved } from "./permission/saved"
 
 export { Effect, Rule, Ruleset } from "@opencode-ai/schema/permission"
@@ -77,7 +78,13 @@ export function evaluate(action: string, resource: string, ...rulesets: Permissi
   return (
     rulesets
       .flat()
-      .findLast((rule) => Wildcard.match(action, rule.action) && Wildcard.match(resource, rule.resource)) ?? {
+      .findLast(
+        (rule) =>
+          Wildcard.match(action, rule.action) &&
+          (action === "bash"
+            ? BashPermission.match(resource, rule.resource, rule.effect)
+            : Wildcard.match(resource, rule.resource)),
+      ) ?? {
       action,
       resource: "*",
       effect: "ask",

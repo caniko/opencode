@@ -10,6 +10,18 @@ const it = testEffect(LayerNode.compile(Config.node))
 
 const load = Config.use.get()
 
+test("bash environment rules stop before the executable", () => {
+  const rules: PermissionV1.Ruleset = [
+    { permission: "bash", pattern: "*", action: "ask" },
+    { permission: "bash", pattern: "*=* canix update *", action: "allow" },
+    { permission: "bash", pattern: "*=* nix-*", action: "deny" },
+  ]
+  expect(Permission.evaluate("bash", "RUST_LOG=info canix update plan --project nix-theme-broker", rules).action).toBe(
+    "allow",
+  )
+  expect(Permission.evaluate("bash", "RUST_LOG=info nix-build .", rules).action).toBe("deny")
+})
+
 describe("Permission.evaluate for permission.task", () => {
   const createRuleset = (rules: Record<string, "allow" | "deny" | "ask">): PermissionV1.Ruleset =>
     Object.entries(rules).map(([pattern, action]) => ({

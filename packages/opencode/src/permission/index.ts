@@ -2,6 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { InstanceState } from "@/effect/instance-state"
 import { Wildcard } from "@opencode-ai/core/util/wildcard"
+import { BashPermission } from "@opencode-ai/core/util/bash-permission"
 import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -29,7 +30,13 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
   return (
     rulesets
       .flat()
-      .findLast((rule) => Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern)) ?? {
+      .findLast(
+        (rule) =>
+          Wildcard.match(permission, rule.permission) &&
+          (permission === "bash"
+            ? BashPermission.match(pattern, rule.pattern, rule.action)
+            : Wildcard.match(pattern, rule.pattern)),
+      ) ?? {
       action: "ask",
       permission,
       pattern: "*",
