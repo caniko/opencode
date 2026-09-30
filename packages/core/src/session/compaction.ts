@@ -18,7 +18,8 @@ import type { StreamOptions } from "@opencode/ai/route"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { Context, Effect, Layer, Result, Stream } from "effect"
+import { Context, Effect, Layer, Result, Schema, Stream } from "effect"
+import { PluginHooks } from "../plugin/hooks.js"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { llmClient } from "../effect/app-node-platform.js"
@@ -27,7 +28,7 @@ import { Token } from "../util/token.js"
 import type { SessionContext } from "./context.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
-import type { SessionMessage } from "./message.js"
+import { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionRunnerRetry } from "./runner/retry.js"
@@ -185,6 +186,7 @@ export const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const db = (yield* Database.Service).db
     const requests = yield* SessionModelRequest.Service
+    const hooks = yield* PluginHooks.Service
 
     const state = State.create<Settings, Editor>({
       name: "session-compaction",
@@ -212,10 +214,13 @@ export const layer = Layer.effect(
       const budget =
         trigger.reason === "overflow" ? Math.min(cap, Math.floor(estimateContext(context) * SHRINK_STEPS[0])) : cap
 
-      const compaction =
-        context.model.compaction?.type === "native"
+      const compaction = Effect.gen(function* () {
+        const planned = yield* owned(trigger, cap)
+        if (planned) return planned
+        return yield* context.model.compaction?.type === "native"
           ? compactNatively(trigger, budget, settings.keep)
           : summarize(trigger, budget, settings.keep)
+      })
       return yield* compaction.pipe(
         Effect.matchEffect({
           onSuccess: (result) => publish(trigger, result),
@@ -234,6 +239,57 @@ export const layer = Layer.effect(
       if (measured < messages.findLastIndex(SessionProviderContext.isCheckpoint)) return false
       return estimateContext(context) >= ceiling
     }
+
+    /** Ask the source-custody owner before selecting a tail or reducing provider context. */
+    const owned = Effect.fnUntraced(function* (
+      trigger: Trigger,
+      ceiling: number,
+    ): Effect.fn.Return<Result | undefined, Failure> {
+      const context = trigger.context
+      if (!(yield* hooks.has("session", "compaction.plan", context.model.ref.providerID))) return undefined
+      const archived = yield* SessionHistory.archive(db, context.session.id).pipe(Effect.orDie)
+      const records = new Map(archived.map((message) => [message.id, message]))
+      for (const message of context.messages) if (!records.has(message.id)) records.set(message.id, message)
+      const baseline = transcript(context, [])
+      const budgetTokens = Math.max(
+        0,
+        Math.floor(ceiling - estimateRequest({ ...baseline, tools: context.tools.definitions }) - 2048),
+      )
+      const event = yield* hooks.trigger("session", "compaction.plan", {
+        sessionID: context.session.id,
+        model: context.model.ref,
+        records: Array.from(records.values(), (message) => Schema.encodeSync(SessionMessage.Info)(message)),
+        budgetTokens,
+      })
+      const supplied = event.result
+      if (
+        event.failure ||
+        !supplied ||
+        typeof supplied.summary !== "string" ||
+        !supplied.summary.trim() ||
+        typeof supplied.recent !== "string" ||
+        !/^[a-f0-9]{64}$/.test(supplied.custody) ||
+        !/^[a-f0-9]{64}$/.test(supplied.planID) ||
+        Token.estimate(supplied.summary + supplied.recent) > budgetTokens
+      )
+        return yield* Effect.fail<Failure>({
+          error: {
+            type: "compaction.failed",
+            message: event.failure ?? "Pre-reduction owner returned no valid bounded custody plan",
+          },
+        })
+      if (trigger.reason !== "manual")
+        yield* bus.publish(SessionEvent.Compaction.Started, {
+          sessionID: context.session.id,
+          reason: "auto",
+          recent: supplied.recent,
+        })
+      return {
+        text: supplied.summary,
+        recent: supplied.recent,
+        metadata: { ...supplied.metadata, custody: supplied.custody, pruningPlan: supplied.planID },
+      }
+    })
 
     /**
      *   first:  [E1 … E8][E9 E10]                  →  [S1 + "E9 E10"]
@@ -662,7 +718,7 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, Database.node, llmClient, SessionModelRequest.node],
+  deps: [Bus.node, Database.node, llmClient, SessionModelRequest.node, PluginHooks.node],
 })
 
 /** History loads from the latest completed compaction, so a previous one is always the first message. */

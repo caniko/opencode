@@ -115,6 +115,22 @@ export const load = Effect.fn("SessionHistory.load")(function* (
   return (yield* messageEntries(db, sessionID, boundary)).map((entry) => entry.message)
 })
 
+/** Exact native history across every compaction boundary, for durable custody.
+ * Does not replay tools or turn generated checkpoints into independent sources. */
+export const archive = Effect.fn("SessionHistory.archive")(function* (
+  db: DatabaseService,
+  sessionID: SessionSchema.ID,
+) {
+  const rows = yield* db
+    .select()
+    .from(SessionMessageTable)
+    .where(eq(SessionMessageTable.session_id, sessionID))
+    .orderBy(asc(SessionMessageTable.seq))
+    .all()
+    .pipe(Effect.orDie)
+  return yield* Effect.forEach(rows, decodeMessageRow)
+})
+
 export const entriesForRunner = Effect.fn("SessionHistory.entriesForRunner")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
