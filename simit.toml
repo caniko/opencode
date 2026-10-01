@@ -1,0 +1,15 @@
+[ci]
+platform = "github"
+provider = "actions"
+runtime = "nix"
+runner = "ubuntu-24.04"
+nix_builds = [".#opencode", ".#checks.x86_64-linux.browser-connection"]
+
+[ci.nix_build]
+only = true
+max_parallel = 2
+max_jobs = 1
+cores = 2
+timeout_minutes = 60
+capture_results = true
+artifact_retention_days = 14
