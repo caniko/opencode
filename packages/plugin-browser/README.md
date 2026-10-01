@@ -1,5 +1,42 @@
 # Browser plugin
 
+## Terminal browser hosts
+
+The fork also accepts an opt-in `host` option on the `opencode.browser` plugin.
+The Home Manager module `homeModules.browser-connection` wires the Toolbelt
+adapter when `programs.opencode.browserConnection.enable = true`. Import this
+alongside Home Manager's normal `programs.opencode` module. The actual XDG
+default browser is selected at connection time; Firefox/Floorp use geckodriver
+and Chromium-family browsers use chromedriver. Each session gets a separate
+automation profile, without copying the user's browsing profile or cookies.
+
+`programs.opencode.browserConnection.headless = true` supports terminal/SSH
+workflows without a display. `browser` optionally overrides the family,
+executable and argument list. Toolbelt owns browser discovery, WebDriver and
+the adapter; OpenCode owns host lifecycle, native tool schemas and delivery.
+
+The host is started on the first browser operation and must send
+`{"type":"ready","version":1,"operations":[...]}` after its browser is ready.
+Requests are newline-delimited JSON `{id,command}` messages, with `command`
+encoded using `Browser.Command`. Responses are `{id,outcome}` using
+`Browser.Outcome`. Files remain bounded base64 transfers and are exported
+through the existing server file boundary. Commands and responses are capped
+at 8 MiB. Cancellation terminates the host; actions are never replayed.
+After cancellation/disconnection, `browser.tabs.list` explicitly starts a fresh
+browser profile; previous tab IDs are no longer available.
+
+The configured `host.operations` list restricts the advertised tools to the
+adapter's implemented capabilities. The WebDriver adapter supports navigation,
+browser-computed accessible roles/names in semantic DOM snapshots, frames,
+JavaScript evaluation, input, dialogs, screenshots, upload/drop and captured
+file retrieval. Chromium-only profiling and Lighthouse, console/network
+capture, desktop Review previews and browser download capture are not exposed
+by this adapter. These remain available through the desktop implementation.
+
+Explicitly configured agent/session browser denies still apply to terminal
+hosts. A connected desktop takes precedence over the terminal host for that
+session. Session move/deletion and plugin unload close owned host processes.
+
 `@opencode/plugin-browser` exposes the desktop browser through Code Mode.
 The server owns tools, invocation scope, and permissions; the desktop owns tabs,
 CDP, captured traffic, evaluations, and capture files. Core only registers the

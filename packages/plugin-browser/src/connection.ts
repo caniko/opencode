@@ -8,6 +8,7 @@ import { Deferred, Effect, Schema, Stream } from "effect"
 import { Browser } from "./rpc.js"
 import { BrowserSkill } from "./skill.js"
 import { BrowserTunnel } from "./tunnel.js"
+import { BrowserHost } from "./host.js"
 
 type Attachment = {
   connectionID: string
@@ -21,19 +22,24 @@ export type Connection = Effect.Success<ReturnType<typeof make>>
 
 export const make = Effect.fn("BrowserConnection.make")(function* (
   ctx: Pick<Context, "agent" | "rpc" | "session" | "location" | "event">,
+  host?: BrowserHost.Options,
 ) {
   const browsers = new Map<Session.ID, Attachment>()
+  const external = host ? yield* BrowserHost.make(host, ctx.location.directory) : undefined
   // The browser tools and their skill, which an attachment allows together.
   const access = [
     { action: "browser", resource: "*" },
     { action: "skill", resource: BrowserSkill.id },
   ] as const
   // Appended after config, so every agent hides the browser until an attachment allows it.
-  yield* ctx.agent.transform((editor) =>
-    editor
-      .list()
-      .forEach((agent) => agent.permissions.push(...access.map((rule) => ({ ...rule, effect: "deny" as const })))),
-  )
+  // An explicitly configured terminal host can connect on demand. Keep configured
+  // agent/session permission rules rather than applying the desktop visibility deny.
+  if (!host)
+    yield* ctx.agent.transform((editor) =>
+      editor
+        .list()
+        .forEach((agent) => agent.permissions.push(...access.map((rule) => ({ ...rule, effect: "deny" as const })))),
+    )
   // Each attachment adds and removes its own allows, so a replaced attachment keeps the new one's.
   const grant = (sessionID: Session.ID) =>
     Effect.acquireRelease(
@@ -171,13 +177,16 @@ export const make = Effect.fn("BrowserConnection.make")(function* (
     })
     .pipe(Effect.orDie)
   yield* ctx.event.subscribe({ types: ["session.deleted", "session.moved"] }).pipe(
-    Stream.runForEach((event) => close(event.data.sessionID)),
+    Stream.runForEach((event) =>
+      close(event.data.sessionID).pipe(Effect.andThen(external ? external.close(event.data.sessionID) : Effect.void)),
+    ),
     Effect.forkScoped({ startImmediately: true }),
   )
 
   return {
     target: Effect.fn("BrowserConnection.target")(function* (sessionID: Session.ID, action: Browser.Action) {
       const browser = browsers.get(sessionID)
+      if (!browser && external) return yield* external.target(sessionID, action)
       if (!browser)
         return yield* new Tool.Error({
           message:
