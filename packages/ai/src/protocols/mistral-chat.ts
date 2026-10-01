@@ -224,11 +224,13 @@ type MistralEvent = Schema.Schema.Type<typeof MistralEvent>
 const MistralStreamEvent = Schema.Union([Schema.Literal(DONE), Protocol.jsonEvent(MistralEvent)])
 
 const lowerMedia = Effect.fn("MistralChat.lowerMedia")(function* (part: MediaPart) {
-  const media = ProviderShared.normalizeMedia(part)
-  const url = typeof part.data === "string" && /^(?:https?:|data:)/.test(part.data) ? part.data : media.dataUrl
-  if (media.mime.startsWith("image/")) return { type: "image_url" as const, image_url: url }
-  if (media.mime === "application/pdf") return { type: "document_url" as const, document_url: url }
-  return yield* ProviderShared.invalidRequest(`Mistral Chat does not support media type ${part.mediaType}`)
+  const mime = part.media.mediaType.toLowerCase()
+  const url =
+    ProviderShared.mediaUrl(part.media) ??
+    (yield* ProviderShared.requireInlineMedia("Mistral Chat", part.media)).dataUrl
+  if (mime.startsWith("image/")) return { type: "image_url" as const, image_url: url }
+  if (mime === "application/pdf") return { type: "document_url" as const, document_url: url }
+  return yield* ProviderShared.invalidRequest(`Mistral Chat does not support media type ${part.media.mediaType}`)
 })
 
 const lowerUser = Effect.fn("MistralChat.lowerUser")(function* (message: LLMRequest["messages"][number]) {
@@ -316,7 +318,7 @@ const lowerToolResults = Effect.fn("MistralChat.lowerToolResults")(function* (
         content.push({ type: "text", text: item.text })
         continue
       }
-      content.push(yield* lowerMedia({ type: "media", mediaType: item.mime, data: item.uri, filename: item.name }))
+      content.push(yield* lowerMedia(ProviderShared.toolFileMedia(item)))
     }
     output.push({
       role: "tool",
@@ -424,6 +426,7 @@ interface ActiveContent {
   readonly type: "text" | "reasoning"
   readonly id: string
   readonly thinking?: MistralThinkingContent
+  readonly thinkingUnits?: MistralThinkingUnit[]
 }
 
 export interface ParserState {
@@ -500,8 +503,8 @@ const closeActive = (state: ParserState, events: LLMEvent[]) => {
           state.lifecycle,
           events,
           state.active.id,
-          thinkingMetadata(state.active.thinking ?? { type: "thinking", thinking: [] }),
-          thinkingText(state.active.thinking?.thinking ?? []),
+          thinkingMetadata({ ...state.active.thinking, type: "thinking", thinking: state.active.thinkingUnits ?? [] }),
+          thinkingText(state.active.thinkingUnits ?? []),
         )
   return { ...state, lifecycle, active: undefined }
 }
@@ -522,20 +525,23 @@ const appendThinking = (state: ParserState, events: LLMEvent[], part: MistralOut
   const current = state.active?.type === "reasoning" ? state : closeActive(state, events)
   const units = thinkingUnits(part.thinking)
   const active = current.active ?? { type: "reasoning" as const, id: `reasoning-${current.nextContent}` }
+  // Keep native units out of streamed events until the block is complete.
+  const accumulated = active.thinkingUnits ?? []
+  accumulated.push(...units)
   const thinking = {
     ...active.thinking,
     ...part,
     type: "thinking" as const,
-    thinking: [...(active.thinking?.thinking ?? []), ...units],
+    thinking: [],
   }
   const text = thinkingText(units)
   return {
     ...current,
     lifecycle:
       text.length > 0
-        ? Lifecycle.reasoningDelta(current.lifecycle, events, active.id, text, thinkingMetadata(thinking))
-        : Lifecycle.reasoningStart(current.lifecycle, events, active.id, thinkingMetadata(thinking)),
-    active: { ...active, thinking },
+        ? Lifecycle.reasoningDelta(current.lifecycle, events, active.id, text)
+        : Lifecycle.reasoningStart(current.lifecycle, events, active.id),
+    active: { ...active, thinking, thinkingUnits: accumulated },
     nextContent: current.active ? current.nextContent : current.nextContent + 1,
   }
 }

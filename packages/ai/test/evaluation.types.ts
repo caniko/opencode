@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { Evaluation, EvaluationClient, EvaluationModel, type EvaluationRoute } from "../src/experimental.js"
 import type { Service } from "../src/experimental/evaluation-client.js"
-import { OpenCodeZen, TypeSafeAI } from "../src/providers.js"
+import { OpenCodeZen, OpenRouter, TypeSafeAI, VercelAIGateway } from "../src/providers.js"
 
 type Requirements<T> = T extends Effect.Effect<infer _A, infer _E, infer R> ? R : never
 type Success<T> = T extends Effect.Effect<infer A, infer _E, infer _R> ? A : never
@@ -26,12 +26,14 @@ const request = Evaluation.request({
 const result = EvaluationClient.evaluate(request)
 type Result = Success<typeof result>
 type Choice = Assert<Equal<Result["answers"]["topic"]["choice"], "billing" | "support">>
+type Confidence = Assert<Equal<Result["answers"]["topic"]["confidence"], number | undefined>>
 type ClientRequirements = Assert<Equal<Requirements<typeof result>, Service>>
 void (true satisfies Choice)
+void (true satisfies Confidence)
 void (true satisfies ClientRequirements)
 
 Effect.gen(function* () {
-  const response = yield* Evaluation.evaluate({
+  const response = yield* Evaluation.run({
     model: OpenCodeZen.experimental.evaluation("jev-1.13"),
     state: ["hello"],
     questions: { greeting: { type: "boolean", instructions: "Greeting?" } },
@@ -45,16 +47,44 @@ Effect.gen(function* () {
 
 declare const route: EvaluationRoute<{ readonly temperature?: number }>
 const custom = EvaluationModel.make({ id: "custom", provider: "custom", route })
-Evaluation.evaluate({
+Evaluation.run({
   model: custom,
   state: "hello",
   questions: { ok: { type: "boolean", instructions: "OK?" } },
   options: { temperature: 0.5 },
 })
 // @ts-expect-error Selected evaluation models retain their request option types.
-Evaluation.evaluate({
+Evaluation.run({
   model: custom,
   state: "hello",
   questions: { ok: { type: "boolean", instructions: "OK?" } },
   options: { temperature: "high" },
+})
+
+Evaluation.run({
+  model: OpenRouter.experimental.evaluation("typesafe/jev-1.13"),
+  state: "hello",
+  questions: { ok: { type: "boolean", instructions: "OK?" } },
+  options: { provider: { zdr: true }, session_id: "session-1", user: "user-1" },
+})
+// @ts-expect-error OpenRouter session IDs are strings.
+Evaluation.run({
+  model: OpenRouter.experimental.evaluation("typesafe/jev-1.13"),
+  state: "hello",
+  questions: { ok: { type: "boolean", instructions: "OK?" } },
+  options: { session_id: 1 },
+})
+
+Evaluation.run({
+  model: VercelAIGateway.experimental.evaluation("typesafe-ai/jev"),
+  state: "hello",
+  questions: { ok: { type: "boolean", instructions: "OK?" } },
+  options: { gateway: { zeroDataRetention: true, only: ["typesafe-ai"] } },
+})
+// @ts-expect-error Vercel zero-data-retention controls are boolean.
+Evaluation.run({
+  model: VercelAIGateway.experimental.evaluation("typesafe-ai/jev"),
+  state: "hello",
+  questions: { ok: { type: "boolean", instructions: "OK?" } },
+  options: { gateway: { zeroDataRetention: "yes" } },
 })

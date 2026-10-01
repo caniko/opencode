@@ -2,7 +2,7 @@ import type { Effect } from "effect"
 import type { RpcMessage } from "effect/unstable/rpc"
 import type { DesktopRpcClient } from "../shared/ipc-rpc"
 import type { DesktopEvent } from "../shared/ipc-rpc/events"
-import { IpcTransportPort } from "../shared/ipc-transport"
+import { IpcTransportPort, omitUndefined } from "../shared/ipc-transport"
 
 // The main process serves Effect's RpcServer over a MessagePort; this side speaks its wire format
 // directly. Messages cross by structured clone (no serialization layer, binary stays binary), every
@@ -65,6 +65,15 @@ export function send<Tag extends InvokeTag>(tag: Tag, ...payload: InvokeArgs<Tag
   void invoke(tag, ...payload).catch(() => undefined)
 }
 
+/** Like `invoke`, but aborting the signal rejects at once and interrupts the handler in main. */
+export function cancellable<Tag extends InvokeTag>(
+  tag: Tag,
+  payload: InvokeArgs<Tag>[0],
+  signal: AbortSignal | undefined,
+): Promise<InvokeResult<Tag>> {
+  return request(tag, payload ?? null, undefined, signal) as Promise<InvokeResult<Tag>>
+}
+
 export function listen<Tag extends EventTag>(tag: Tag, listener: (value: EventValue<Tag>) => void) {
   const callback = listener as (value: unknown) => void
   const callbacks = listeners.get(tag) ?? new Set()
@@ -76,11 +85,30 @@ export function listen<Tag extends EventTag>(tag: Tag, listener: (value: EventVa
   }
 }
 
-function request(tag: string, payload: unknown, chunk?: Pending["chunk"]) {
+function request(tag: string, payload: unknown, chunk?: Pending["chunk"], signal?: AbortSignal) {
   const id = nextId++
   return new Promise<unknown>((resolve, reject) => {
-    pending.set(id, { resolve, reject, chunk })
-    const message: RpcMessage.RequestEncoded = { _tag: "Request", id, tag, payload, headers: [] }
+    if (signal?.aborted) return reject(signal.reason)
+    const abort = () => {
+      if (!pending.delete(id)) return
+      reject(signal?.reason)
+      void port.then((p) => p.postMessage({ _tag: "Interrupt", requestId: id } satisfies RpcMessage.InterruptEncoded))
+    }
+    signal?.addEventListener("abort", abort, { once: true })
+    const settle =
+      <Value>(callback: (value: Value) => void) =>
+      (value: Value) => {
+        signal?.removeEventListener("abort", abort)
+        callback(value)
+      }
+    pending.set(id, { resolve: settle(resolve), reject: settle(reject), chunk })
+    const message: RpcMessage.RequestEncoded = {
+      _tag: "Request",
+      id,
+      tag,
+      payload: omitUndefined(payload),
+      headers: [],
+    }
     void port.then((p) => p.postMessage(message))
   })
 }

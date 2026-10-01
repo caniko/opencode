@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Cause, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   FetchHttpClient,
   Headers,
@@ -8,24 +8,11 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http"
 import { HttpContext, HttpRateLimitDetails, AIError, TransportError } from "../schema/index.js"
-import { classifyProviderFailure } from "../provider-error.js"
+import { classifyProviderFailure, providerErrorMessage } from "../provider-error.js"
+import { Service, type HttpMiddleware, type Interface } from "./executor-service.js"
 
-export interface Interface {
-  readonly execute: (
-    request: HttpClientRequest.HttpClientRequest,
-    middleware?: HttpMiddleware,
-  ) => Effect.Effect<HttpClientResponse.HttpClientResponse, AIError>
-}
-
-export type HttpHandler = (
-  request: HttpClientRequest.HttpClientRequest,
-) => Effect.Effect<HttpClientResponse.HttpClientResponse, Error>
-export type HttpMiddleware = (
-  request: HttpClientRequest.HttpClientRequest,
-  handler: HttpHandler,
-) => Effect.Effect<HttpClientResponse.HttpClientResponse, Error>
-
-export class Service extends Context.Service<Service, Interface>()("@opencode/AI/RequestExecutor") {}
+export { Service } from "./executor-service.js"
+export type { HttpHandler, HttpMiddleware, Interface } from "./executor-service.js"
 
 const headerDetails = (headers: Headers.Headers) =>
   Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, String(value)]))
@@ -97,21 +84,17 @@ export const responseHttp = (response: HttpClientResponse.HttpClientResponse) =>
     headers: headerDetails(response.headers),
   })
 
-const decodeProviderBody = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      message: Schema.optionalKey(Schema.String),
-      error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) })),
-    }),
-  ),
-)
+const MAX_BODY_CHARS = 2000
 
+// Without a recognized message, show the raw body so the provider's explanation is never dropped.
 const providerMessage = (status: number, body: string | void) => {
-  const decoded = body === undefined ? undefined : Option.getOrUndefined(decodeProviderBody(body))
-  return (
-    [decoded?.error?.message, decoded?.message].find((message) => message?.trim()) ??
-    `Provider request failed with HTTP ${status}`
-  )
+  const fallback = `Provider request failed with HTTP ${status}`
+  const text = body?.trim() ?? ""
+  const message = providerErrorMessage(text)
+  if (message) return message
+  // Gateway and proxy HTML error pages are markup, not an explanation.
+  if (!text || /^<(?:!doctype|html)/i.test(text)) return fallback
+  return `${fallback}: ${text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}…` : text}`
 }
 
 const statusError = (response: HttpClientResponse.HttpClientResponse) =>
@@ -267,5 +250,21 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient> = Layer.e
 )
 
 export const fetchLayer = layer.pipe(Layer.provide(FetchHttpClient.layer))
+
+/** Run `fn` on every request: it sees the raw response before status classification, inside middleware already on `executor`, and outside per-call middleware. */
+export const middleware = (fn: HttpMiddleware, executor: Layer.Layer<Service> = fetchLayer): Layer.Layer<Service> =>
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const inner = yield* Service
+      return Service.of({
+        execute: (request, next) =>
+          inner.execute(
+            request,
+            next === undefined ? fn : (input, handler) => fn(input, (forwarded) => next(forwarded, handler)),
+          ),
+      })
+    }),
+  ).pipe(Layer.provide(executor))
 
 export * as RequestExecutor from "./executor.js"

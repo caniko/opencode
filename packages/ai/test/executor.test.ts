@@ -1,11 +1,11 @@
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Fiber, Ref, Stream } from "effect"
+import { Deferred, Effect, Fiber, Layer, Ref, Stream } from "effect"
 import { Headers, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import { LLM, AIError, HttpContext, InvalidProviderOutputError, TransportError } from "../src/index.js"
 import { LLMClient, RequestExecutor, WebSocketTransport, type WebSocketChannelExecutor } from "../src/route.js"
 import { route } from "../src/protocols/openai-chat.js"
 import { configure } from "../src/providers/openai.js"
-import { dynamicResponse, fixedResponse, systemError } from "./lib/http.js"
+import { dynamicResponse, fixedResponse, handlerLayer, systemError } from "./lib/http.js"
 import { deltaChunk } from "./lib/openai-chunks.js"
 import { sseEvents, sseRaw } from "./lib/sse.js"
 import { it } from "./lib/effect.js"
@@ -195,6 +195,26 @@ describe("RequestExecutor", () => {
     ),
   )
 
+  it.effect("runs shared middleware outside per-call middleware", () => {
+    const calls: Array<string> = []
+    const record = (name: string) => Effect.sync(() => calls.push(name))
+    const base = RequestExecutor.layer.pipe(
+      Layer.provide(handlerLayer((input) => record("handler").pipe(Effect.as(input.respond("ok"))))),
+    )
+    return Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      yield* executor.execute(request, (input, next) => record("per-call").pipe(Effect.andThen(next(input))))
+      expect(calls).toEqual(["outer", "per-call", "handler"])
+      calls.length = 0
+      yield* executor.execute(request)
+      expect(calls).toEqual(["outer", "handler"])
+    }).pipe(
+      Effect.provide(
+        RequestExecutor.middleware((input, next) => record("outer").pipe(Effect.andThen(next(input))), base),
+      ),
+    )
+  })
+
   it.effect("classifies context overflow responses", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service
@@ -253,8 +273,54 @@ describe("RequestExecutor", () => {
       expectAIError(error)
       expect(error.reason).toMatchObject({ _tag: "InvalidRequest" })
       expect("classification" in error.reason ? error.reason.classification : undefined).toBeUndefined()
-      expect(error.message).toBe("Provider request failed with HTTP 400")
+      expect(error.message).toBe("Provider request failed with HTTP 400: invalid parameter")
     }).pipe(Effect.provide(fixedResponse("invalid parameter", { status: 400 }))),
+  )
+
+  it.effect("shows unrecognized provider error bodies", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expect(error.message).toBe(
+        'Provider request failed with HTTP 422: {"object":"error","message":{"detail":[{"msg":"Input should be less than or equal to 1.5"}]}}',
+      )
+    }).pipe(
+      Effect.provide(
+        fixedResponse('{"object":"error","message":{"detail":[{"msg":"Input should be less than or equal to 1.5"}]}}', {
+          status: 422,
+        }),
+      ),
+    ),
+  )
+
+  it.effect("shows messages from common provider error layouts", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expect(error.message).toBe("Invalid API Key")
+    }).pipe(Effect.provide(fixedResponse('{"detail":"Invalid API Key"}', { status: 401 }))),
+  )
+
+  it.effect("truncates long unrecognized provider error bodies", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expect(error.message).toBe(`Provider request failed with HTTP 400: ${"x".repeat(2000)}…`)
+      expect(error.reason.body).toHaveLength(5000)
+    }).pipe(Effect.provide(fixedResponse("x".repeat(5000), { status: 400 }))),
+  )
+
+  it.effect("does not show HTML error pages", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expect(error.message).toBe("Provider request failed with HTTP 502")
+      expect(error.reason.body).toContain("Bad Gateway")
+    }).pipe(Effect.provide(fixedResponse("<!DOCTYPE html><html><body>Bad Gateway</body></html>", { status: 502 }))),
   )
 
   it.effect("preserves structured provider messages from large error bodies", () =>
@@ -279,7 +345,7 @@ describe("RequestExecutor", () => {
     ),
   )
 
-  it.effect("falls back when structured provider messages are empty", () =>
+  it.effect("shows the body when structured provider messages are empty", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service
       const error = yield* executor.execute(request).pipe(Effect.flip)
@@ -288,7 +354,7 @@ describe("RequestExecutor", () => {
       expect(error.reason).toMatchObject({
         _tag: "InvalidRequest",
       })
-      expect(error.message).toBe("Provider request failed with HTTP 400")
+      expect(error.message).toBe('Provider request failed with HTTP 400: {"error":{"message":"  "}}')
     }).pipe(Effect.provide(fixedResponse('{"error":{"message":"  "}}', { status: 400 }))),
   )
 

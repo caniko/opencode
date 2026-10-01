@@ -63,6 +63,7 @@ export const ChoiceAnswer = Schema.Struct({
   type: Schema.Literal("choice"),
   choice: Schema.String,
   probabilities: Schema.optional(Schema.Record(Schema.String, Probability)),
+  confidence: Schema.optional(Probability),
 })
 export type ChoiceAnswer = Schema.Schema.Type<typeof ChoiceAnswer>
 
@@ -70,6 +71,7 @@ export const ScoreAnswer = Schema.Struct({
   type: Schema.Literal("score"),
   score: Schema.Number,
   probabilities: Schema.optional(Schema.Record(Schema.String, Probability)),
+  confidence: Schema.optional(Probability),
 })
 export type ScoreAnswer = Schema.Schema.Type<typeof ScoreAnswer>
 
@@ -92,6 +94,7 @@ export type AnswerFor<Question extends EvaluationQuestion> = Question extends {
       readonly type: "choice"
       readonly choice: Extract<keyof Criteria, string>
       readonly probabilities?: Readonly<Record<Extract<keyof Criteria, string>, number>>
+      readonly confidence?: number
     }
   : Question extends { readonly type: "score" }
     ? ScoreAnswer
@@ -105,10 +108,10 @@ export type EvaluationOptions = Record<string, unknown>
 
 export interface EvaluationRoute<Options extends EvaluationOptions = EvaluationOptions> {
   readonly id: string
-  readonly evaluate: <const Questions extends EvaluationQuestions>(
-    request: EvaluationRequestFor<Options, Questions>,
+  readonly evaluate: (
+    request: EvaluationRequestFor<Options>,
     execute: Execute,
-  ) => Effect.Effect<EvaluationResponseFor<Questions>, AIError>
+  ) => Effect.Effect<EvaluationResponse, AIError>
 }
 
 export class EvaluationModel<Options extends EvaluationOptions = EvaluationOptions> {
@@ -214,15 +217,15 @@ export function request(input: EvaluationRequest | EvaluationRequestInput) {
   return new EvaluationRequest({
     ...input,
     model: input.model as unknown as EvaluationModel,
-    http: input.http === undefined ? undefined : HttpOptions.make(input.http),
+    http: HttpOptions.make(input.http),
   })
 }
 
-export function evaluate<const Model extends object, const Questions extends EvaluationQuestions>(
+export function run<const Model extends object, const Questions extends EvaluationQuestions>(
   input: EvaluationRequestInput<Model, Questions>,
 ): Effect.Effect<EvaluationResponseFor<Questions>, AIError, Service>
-export function evaluate(input: EvaluationRequest): Effect.Effect<EvaluationResponse, AIError, Service>
-export function evaluate(input: EvaluationRequest | EvaluationRequestInput) {
+export function run(input: EvaluationRequest): Effect.Effect<EvaluationResponse, AIError, Service>
+export function run(input: EvaluationRequest | EvaluationRequestInput) {
   return Effect.try({
     try: () => (input instanceof EvaluationRequest ? input : request(input)),
     catch: (cause) =>
@@ -241,5 +244,5 @@ export function evaluate(input: EvaluationRequest | EvaluationRequestInput) {
 
 export const Evaluation = {
   request,
-  evaluate,
+  run,
 } as const
