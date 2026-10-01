@@ -77,6 +77,42 @@ const it = testEffect(
 )
 
 describe("PluginSupervisor", () => {
+  it.live("passes configured selector options to a built-in or host plugin", () =>
+    Effect.gen(function* () {
+      const sdk = yield* SdkPlugins.Service
+      yield* sdk.register(
+        define({
+          id: "configured-plugin",
+          effect: (ctx) =>
+            ctx.command
+              .transform((editor) => {
+                if (ctx.options.command === "configured-command")
+                  editor.add({ name: "configured-command", execute: () => Effect.void })
+              })
+              .pipe(Effect.asVoid),
+        }),
+      )
+      source.operations = [{ type: "add", target: "configured-plugin", options: { command: "configured-command" } }]
+      const directory = yield* tmpdirScoped()
+      const locations = yield* LocationServiceMap.Service
+      yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        const commands = yield* Command.Service
+        expect(yield* commands.get("configured-command")).toBeDefined()
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
+      )
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          source.operations = []
+        }),
+      ),
+    ),
+  )
+
   it.live("reports a duplicate plugin ID as a failure without dropping the generation", () =>
     Effect.gen(function* () {
       const sdk = yield* SdkPlugins.Service

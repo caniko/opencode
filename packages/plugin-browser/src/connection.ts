@@ -7,6 +7,7 @@ import { Tool } from "@opencode/schema/tool"
 import { Deferred, Effect, Schema, Stream } from "effect"
 import { Browser } from "./rpc.js"
 import { BrowserTunnel } from "./tunnel.js"
+import { BrowserHost } from "./host.js"
 
 type Attachment = {
   connectionID: string
@@ -20,12 +21,17 @@ export type Connection = Effect.Success<ReturnType<typeof make>>
 
 export const make = Effect.fn("BrowserConnection.make")(function* (
   ctx: Pick<Context, "agent" | "rpc" | "session" | "location" | "event">,
+  host?: BrowserHost.Options,
 ) {
   const browsers = new Map<Session.ID, Attachment>()
+  const external = host ? yield* BrowserHost.make(host, ctx.location.directory) : undefined
   // Appended after config, so every agent hides the browser until an attachment allows it.
-  yield* ctx.agent.transform((editor) =>
-    editor.list().forEach((agent) => agent.permissions.push({ action: "browser", resource: "*", effect: "deny" })),
-  )
+  // An explicitly configured terminal host can connect on demand. Keep configured
+  // agent/session permission rules rather than applying the desktop visibility deny.
+  if (!host)
+    yield* ctx.agent.transform((editor) =>
+      editor.list().forEach((agent) => agent.permissions.push({ action: "browser", resource: "*", effect: "deny" })),
+    )
   // Each attachment adds and removes its own allow, so a replaced attachment keeps the new one's.
   const grant = (sessionID: Session.ID) =>
     Effect.acquireRelease(
@@ -158,13 +164,16 @@ export const make = Effect.fn("BrowserConnection.make")(function* (
     .pipe(Effect.orDie)
   yield* ctx.event.subscribe().pipe(
     Stream.filter((event) => event.type === "session.deleted" || event.type === "session.moved"),
-    Stream.runForEach((event) => close(event.data.sessionID)),
+    Stream.runForEach((event) =>
+      close(event.data.sessionID).pipe(Effect.andThen(external ? external.close(event.data.sessionID) : Effect.void)),
+    ),
     Effect.forkScoped({ startImmediately: true }),
   )
 
   return {
     target: Effect.fn("BrowserConnection.target")(function* (sessionID: Session.ID, action: Browser.Action) {
       const browser = browsers.get(sessionID)
+      if (!browser && external) return yield* external.target(sessionID, action)
       if (!browser)
         return yield* new Tool.Error({
           message:
