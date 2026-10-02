@@ -24,7 +24,9 @@ export function resolve(target: Target): Entrypoints {
         return resolveModule(specifier, target.directory)
       } catch (error) {
         if (
-          !(error instanceof Error) ||
+          // Bun's ResolveMessage has a Node-compatible code but is not an Error.
+          typeof error !== "object" ||
+          error === null ||
           !("code" in error) ||
           ![
             "ENOENT",
