@@ -24,17 +24,17 @@
         "wrapper-manager": "wrapper-manager"
       },
       "locked": {
-        "lastModified": 1790890055,
-        "narHash": "sha256-06Jy1tLgPoI4D4TTFoQ7Jd9P5RVGeXkTAHSYEvAG/Qg=",
+        "lastModified": 1790893769,
+        "narHash": "sha256-lCK+SlxE3jpQSGcGNygdH5dvfDCdjMB0pOaMyOnx5w0=",
         "owner": "caniko",
         "repo": "canix-toolbelt",
-        "rev": "0a12001d3e38f9a7b56276176cea4c18373ec18c",
+        "rev": "9caf679440076addbde1ba9bb0786a29d59cd5f6",
         "type": "github"
       },
       "original": {
         "owner": "caniko",
         "repo": "canix-toolbelt",
-        "rev": "0a12001d3e38f9a7b56276176cea4c18373ec18c",
+        "rev": "9caf679440076addbde1ba9bb0786a29d59cd5f6",
         "type": "github"
       }
     },
@@ -2420,15 +2420,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1790751185,
-        "narHash": "sha256-6EnYiTzhN219WU9aBj77By5MkDuwkrn3IfHCYJAJ9ug=",
-        "ref": "refs/heads/trunk",
-        "rev": "a8d43d13ed34c4d27f70fe10ed3450c0d89ca92f",
-        "revCount": 86,
+        "lastModified": 1790893044,
+        "narHash": "sha256-ocklQuGQThxz7FewhaLUDPvdZLiSN+sqV+9Pn8PA38w=",
+        "ref": "integration/gpu-routing",
+        "rev": "4465108ce8160bdb7b9510211669099ee3a83ac4",
+        "revCount": 90,
         "type": "git",
         "url": "https://github.com/caniko/fleetix.git"
       },
       "original": {
+        "ref": "integration/gpu-routing",
+        "rev": "4465108ce8160bdb7b9510211669099ee3a83ac4",
         "type": "git",
         "url": "https://github.com/caniko/fleetix.git"
       }
