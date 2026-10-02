@@ -59,6 +59,7 @@ export const Event = { Created, Exited, Deleted, Definitions: inventory(Created,
 
 export const CreateInput = Schema.Struct({
   command: Schema.String,
+  environment: optional(Schema.Literals(["project", "bootstrap"])),
   cwd: optional(Schema.String),
   timeout: optional(NonNegativeInt),
   metadata: optional(Metadata),

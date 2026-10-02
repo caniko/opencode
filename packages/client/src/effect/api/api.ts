@@ -2178,6 +2178,7 @@ export type ShellListOperation<E = never> = (input?: ShellListInput) => Effect.E
 export type ShellCreateInput = {
   readonly location?: { readonly directory?: string | undefined } | undefined
   readonly command: string
+  readonly environment?: "project" | "bootstrap" | undefined
   readonly cwd?: string | undefined
   readonly timeout?: number | undefined
   readonly metadata?: { readonly [x: string]: unknown } | undefined

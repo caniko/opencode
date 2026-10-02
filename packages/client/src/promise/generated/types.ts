@@ -6377,24 +6377,35 @@ export type ShellCreateInput = {
   readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]
   readonly command: {
     readonly command: string
+    readonly environment?: "project" | "bootstrap"
     readonly cwd?: string
     readonly timeout?: number
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["command"]
+  readonly environment?: {
+    readonly command: string
+    readonly environment?: "project" | "bootstrap"
+    readonly cwd?: string
+    readonly timeout?: number
+    readonly metadata?: { readonly [x: string]: JsonValue }
+  }["environment"]
   readonly cwd?: {
     readonly command: string
+    readonly environment?: "project" | "bootstrap"
     readonly cwd?: string
     readonly timeout?: number
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["cwd"]
   readonly timeout?: {
     readonly command: string
+    readonly environment?: "project" | "bootstrap"
     readonly cwd?: string
     readonly timeout?: number
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["timeout"]
   readonly metadata?: {
     readonly command: string
+    readonly environment?: "project" | "bootstrap"
     readonly cwd?: string
     readonly timeout?: number
     readonly metadata?: { readonly [x: string]: JsonValue }

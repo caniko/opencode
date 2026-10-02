@@ -32,6 +32,7 @@ import { Permission } from "@opencode/core/permission"
 import { PermissionSaved } from "@opencode/core/permission/saved"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Shell } from "@opencode/core/shell"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { ID } from "@opencode/schema/shell"
@@ -133,6 +134,7 @@ const shellPluginSupervisor = makeLocationNode({
     Config.node,
     Environment.node,
     FileAccess.node,
+    Location.node,
     Permission.node,
     Session.node,
     Job.node,
@@ -291,6 +293,80 @@ const runPermissionCommand = (
 
 // Directory cases still document inherited limitations; fixed scanner cases require matching behavior.
 describe("ShellTool scanner permissions", () => {
+  productionIt.live("denied invocations never execute environment preparation", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          const marker = path.join(tmp.path, "prepared")
+          yield* hooks.register("shell", "create.before", () =>
+            Effect.promise(() => Bun.write(marker, "prepared")).pipe(Effect.asVoid),
+          )
+          denyAction = "shell"
+          const result = yield* executeTool(registry, call({ command: helloCommand }))
+          expect(result.status).toBe("error")
+          expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+          const shell = yield* Shell.Service
+          expect(yield* shell.list()).toEqual([])
+        }),
+      )
+    }),
+  )
+
+  productionIt.live("hook command changes are authorized again before spawning", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              event.command = cwdCommand
+              denyAction = "shell"
+            }),
+          )
+          const result = yield* executeTool(registry, call({ command: helloCommand }))
+          expect(result.status).toBe("error")
+          expect(assertions.map((item) => item.resources)).toEqual([[helloCommand], [cwdCommand]])
+          const shell = yield* Shell.Service
+          expect(yield* shell.list()).toEqual([])
+        }),
+      )
+    }),
+  )
+
+  productionIt.live("bootstrap requests carry native invocation and tool identities", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          const sessions = yield* Session.Service
+          yield* sessions.environment({ sessionID, variables: { PROJECT_TAINT: "session-only" } })
+          yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              expect(event.environment).toBe("bootstrap")
+              expect(event.sessionID).toBe(sessionID)
+              expect(event.toolCallID).toBe("call-bootstrap")
+              expect(event.invocationID).toStartWith("sh_")
+              expect(event.env.PROJECT_TAINT).toBeUndefined()
+            }),
+          )
+          const result = yield* executeTool(
+            registry,
+            call({ command: helloCommand, environment: "bootstrap" }, "call-bootstrap"),
+          )
+          expect(result.status).toBe("completed")
+          expect(assertions).toHaveLength(1)
+        }),
+      )
+    }),
+  )
+
   const test = isWindows || !Bun.which("sh") ? permissionIt.live.skip : permissionIt.live
   for (const portable of [false, true]) {
     const scanner = portable ? "native" : "legacy"
@@ -996,7 +1072,7 @@ describe("ShellTool", () => {
             Effect.gen(function* () {
               const sessions = yield* Session.Service
               yield* sessions.environment({ sessionID, variables: { AI_AGENT: "outer-agent" } })
-              const command = isWindows ? '[Console]::Out.Write($env:AI_AGENT)' : 'printf %s "$AI_AGENT"'
+              const command = isWindows ? "[Console]::Out.Write($env:AI_AGENT)" : 'printf %s "$AI_AGENT"'
               const settled = yield* executeTool(registry, call({ command }))
 
               expect(settled.status).toBe("completed")
@@ -1362,9 +1438,7 @@ describe("ShellTool", () => {
               expect(settled.status).toBe("completed")
               expect(settled.metadata).toMatchObject({ exit: 7, truncated: false })
               expect(settled.content?.[0]).toEqual({ type: "text", text: "body" })
-              expect(settled.content?.[1]).toMatchObject(
-                Expected.text(expect.stringContaining("Exited with code 7")),
-              )
+              expect(settled.content?.[1]).toMatchObject(Expected.text(expect.stringContaining("Exited with code 7")))
             }),
           ),
         )
@@ -1391,9 +1465,7 @@ describe("ShellTool", () => {
                 if (!content || content.type !== "text") throw new Error("Expected text content")
                 expect(content.text.includes("output-start")).toBe(false)
                 expect(content.text.includes("output-end")).toBe(true)
-                expect(content).toMatchObject(
-                  Expected.text(expect.stringContaining("full output saved to ")),
-                )
+                expect(content).toMatchObject(Expected.text(expect.stringContaining("full output saved to ")))
               }),
             ),
           )

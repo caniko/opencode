@@ -1924,6 +1924,7 @@ export function make(options: ClientOptions) {
             query: { location: input["location"] },
             body: {
               command: input["command"],
+              environment: input["environment"],
               cwd: input["cwd"],
               timeout: input["timeout"],
               metadata: input["metadata"],

@@ -10,6 +10,7 @@ import { Config } from "../../config.js"
 import { Environment } from "../../environment/index.js"
 import { Job } from "../../job.js"
 import { FileAccess } from "../../file-access.js"
+import { Location } from "../../location.js"
 import { Permission } from "../../permission.js"
 import { NonNegativeInt } from "../../schema.js"
 import { Session } from "../../session.js"
@@ -46,6 +47,10 @@ const description = (shell?: string) =>
 
 export const Input = Schema.Struct({
   command: Schema.String.annotate({ description: "Shell command string to execute" }),
+  environment: Schema.optionalKey(Schema.Literals(["project", "bootstrap"])).annotate({
+    description:
+      "Environment mode. Defaults to project. Use bootstrap explicitly to diagnose or repair a broken project environment using configured host tools without executing its .envrc.",
+  }),
   workdir: Schema.optionalKey(Schema.String).annotate({
     description:
       "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
@@ -112,6 +117,16 @@ export const Plugin = {
     const compatibleShell = shellSelect.resolve({ priority: "compat" })
     const permission = yield* Permission.Service
     const config = yield* Config.Service
+    const location = yield* Location.Service
+
+    const validateWorkdir = Effect.fn("ShellTool.validateWorkdir")(function* (cwd: string) {
+      const workdir = yield* Environment.typeFollowing(environment.files, cwd).pipe(
+        Effect.catchTag("Environment.NotFound", () =>
+          Effect.fail(new Error(`Working directory does not exist: ${cwd}`)),
+        ),
+      )
+      if (workdir !== "directory") return yield* Effect.fail(new Error(`Working directory is not a directory: ${cwd}`))
+    })
 
     const prepare = Effect.fn("ShellTool.prepare")(function* (invocation: ShellCreateBefore, context: Tool.Context) {
       const source = {
@@ -141,13 +156,7 @@ export const Plugin = {
           source,
         })
       // Approval can outlive the directory, so validate immediately before spawning.
-      const workdir = yield* Environment.typeFollowing(environment.files, target.absolute).pipe(
-        Effect.catchTag("Environment.NotFound", () =>
-          Effect.fail(new Error(`Working directory does not exist: ${target.absolute}`)),
-        ),
-      )
-      if (workdir !== "directory")
-        return yield* Effect.fail(new Error(`Working directory is not a directory: ${target.absolute}`))
+      yield* validateWorkdir(target.absolute)
       return timeout
     })
 
@@ -197,13 +206,23 @@ export const Plugin = {
             Effect.gen(function* () {
               const timeout = input.background === true ? (input.timeout ?? 0) : (input.timeout ?? DEFAULT_TIMEOUT_MS)
               let finalTimeout = timeout
+              // Authorize the original invocation before hooks can execute project code.
+              const original: ShellCreateBefore = {
+                command: input.command,
+                cwd: input.workdir ?? location.directory,
+                timeout,
+                shell: yield* compatibleShell,
+                env: {},
+              }
+              yield* prepare(original, context)
               const info = yield* shell.create(
                 {
-                  command: input.command,
-                  cwd: input.workdir,
+                  command: original.command,
+                  cwd: original.cwd,
                   timeout,
-                  shell: yield* compatibleShell,
-                  metadata: { sessionID: context.sessionID },
+                  shell: original.shell,
+                  environment: input.environment,
+                  metadata: { sessionID: context.sessionID, toolCallID: context.id },
                 },
                 (invocation) =>
                   Effect.gen(function* () {
@@ -211,7 +230,14 @@ export const Plugin = {
                     invocation.env.OPENCODE = "1"
                     invocation.env.AI_AGENT ||= "opencode"
                     invocation.env.OPENCODE_SESSION_ID = context.sessionID
-                    finalTimeout = yield* prepare(invocation, context)
+                    if (
+                      invocation.command !== original.command ||
+                      invocation.cwd !== original.cwd ||
+                      invocation.shell !== original.shell
+                    )
+                      yield* prepare(invocation, context)
+                    else yield* validateWorkdir(invocation.cwd)
+                    finalTimeout = invocation.timeout
                   }),
               )
               yield* context.progress({ shellID: info.id })

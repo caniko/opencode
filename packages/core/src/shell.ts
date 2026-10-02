@@ -256,12 +256,18 @@ const layer = () =>
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
         const sessionID = input.metadata?.sessionID
+        const id = Shell.ID.ascending()
         const sessionEnvironment =
-          location.workspaceID === undefined && Schema.is(SessionSchema.ID)(sessionID)
+          input.environment !== "bootstrap" &&
+          location.workspaceID === undefined &&
+          Schema.is(SessionSchema.ID)(sessionID)
             ? yield* environments.get(sessionID)
             : undefined
         const invocation: ShellCreateBefore = {
           sessionID: Schema.is(SessionSchema.ID)(sessionID) ? sessionID : undefined,
+          invocationID: id,
+          toolCallID: typeof input.metadata?.toolCallID === "string" ? input.metadata.toolCallID : undefined,
+          environment: input.environment ?? "project",
           command: input.command,
           cwd: input.cwd ?? location.directory,
           timeout: input.timeout ?? 0,
@@ -290,7 +296,6 @@ const layer = () =>
         )
         if (before) yield* before(invocation)
 
-        const id = Shell.ID.ascending()
         const args = ShellSelect.args(invocation.shell, invocation.command)
         const file = path.join(outputDir, `${id}.out`)
 
@@ -301,7 +306,7 @@ const layer = () =>
           cwd: invocation.cwd,
           shell: invocation.shell,
           file,
-          metadata: input.metadata ?? {},
+          metadata: { ...input.metadata, environment: invocation.environment },
           time: { started: Date.now() },
         }
 
