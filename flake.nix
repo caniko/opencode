@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     canix-toolbelt = {
-      url = "github:caniko/canix-toolbelt/0a12001d3e38f9a7b56276176cea4c18373ec18c";
+      url = "github:caniko/canix-toolbelt/9caf679440076addbde1ba9bb0786a29d59cd5f6";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
