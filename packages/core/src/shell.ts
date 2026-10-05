@@ -36,6 +36,7 @@ export const DIRECTORY = "shell"
 type Info = Shell.Info
 type CreateInput = Shell.CreateInput & {
   shell?: string
+  environment?: "project" | "bootstrap"
 }
 
 type Active = {
@@ -63,6 +64,7 @@ export interface Interface {
   readonly create: <E = never, R = never>(
     input: CreateInput,
     before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
+    beforePreparation?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
   ) => Effect.Effect<Shell.Info, E | AppProcess.AppProcessError, R>
   // Currently running commands only; exited shells are retained for get/output but excluded here.
   readonly list: () => Effect.Effect<Shell.Info[]>
@@ -254,14 +256,19 @@ const layer = () =>
       const create = Effect.fn("Shell.create")(function* <E = never, R = never>(
         input: CreateInput,
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
+        beforePreparation?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
         const sessionID = input.metadata?.sessionID
         const sessionEnvironment =
           location.workspaceID === undefined && Schema.is(SessionSchema.ID)(sessionID)
             ? yield* environments.get(sessionID)
             : undefined
+        const id = Shell.ID.ascending()
         const invocation: ShellCreateBefore = {
           sessionID: Schema.is(SessionSchema.ID)(sessionID) ? sessionID : undefined,
+          environment: input.environment ?? "project",
+          invocationID: id,
+          toolCallID: typeof input.metadata?.toolCallID === "string" ? input.metadata.toolCallID : undefined,
           command: input.command,
           cwd: input.cwd ?? location.directory,
           timeout: input.timeout ?? 0,
@@ -272,6 +279,10 @@ const layer = () =>
             OPENCODE_TERMINAL: "1",
           },
         }
+        // Preparation hooks can execute project code. The caller authorizes
+        // the original request before those effects, then checks transformed
+        // commands through the existing pre-spawn callback below.
+        if (beforePreparation) yield* beforePreparation(invocation)
         yield* Effect.acquireUseRelease(
           Effect.sync(() => new AbortController()),
           (controller) =>
@@ -290,7 +301,6 @@ const layer = () =>
         )
         if (before) yield* before(invocation)
 
-        const id = Shell.ID.ascending()
         const args = ShellSelect.args(invocation.shell, invocation.command)
         const file = path.join(outputDir, `${id}.out`)
 
