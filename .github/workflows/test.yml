@@ -24,7 +24,8 @@ env:
 jobs:
   affected:
     name: affected packages
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Keep upstream's pool while allowing the maintained fork to qualify on GitHub.
+    runs-on: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     outputs:
       app: ${{ steps.packages.outputs.app }}
     steps:
@@ -59,9 +60,9 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: ${{ github.repository == 'caniko/opencode' && 'windows-2025' || 'blacksmith-4vcpu-windows-2025' }}
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -179,9 +180,9 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: ${{ github.repository == 'caniko/opencode' && 'windows-2025' || 'blacksmith-4vcpu-windows-2025' }}
     runs-on: ${{ matrix.settings.host }}
     env:
       E2E_ENABLED: ${{ needs.affected.outputs.app == 'true' && github.ref_name != 'v2' && github.head_ref != 'v2' }}
