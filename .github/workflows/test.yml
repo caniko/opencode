@@ -20,6 +20,9 @@ on:
           - cli-startup
           - npm-git
           - composer
+          - pty
+          - app-config
+          - vcs
 
 concurrency:
   # Keep every run on dev so cancelled checks do not pollute the default branch
@@ -37,7 +40,7 @@ env:
 jobs:
   affected:
     name: affected packages
-    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git"]'), inputs.suite)
+    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "pty", "app-config", "vcs"]'), inputs.suite)
     # Keep upstream's pool while allowing the maintained fork to qualify on GitHub.
     runs-on: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     outputs:
@@ -76,7 +79,7 @@ jobs:
       matrix:
         # Serial full-suite Windows execution exceeds one step's budget.
         # Distribute the suites while retaining every assertion and the 20-minute limit.
-        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || inputs.suite == 'npm-git' && '["core"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
+        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || contains(fromJSON('["npm-git", "pty", "vcs"]'), inputs.suite) && '["core"]' || inputs.suite == 'app-config' && '["app"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
         settings:
           - name: linux
             host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
@@ -155,6 +158,19 @@ jobs:
           fi
           if [ "$DIAGNOSTIC_SUITE" = npm-git ]; then
             GIT_TRACE=1 GIT_TRACE_PERFORMANCE=1 GITHUB_ACTIONS=false bun run --cwd packages/core test ./test/npm.test.ts
+            exit $?
+          fi
+          if [ "$DIAGNOSTIC_SUITE" = pty ]; then
+            GITHUB_ACTIONS=false bun run --cwd packages/core test ./test/pty/pty-windows.test.ts
+            exit $?
+          fi
+          if [ "$DIAGNOSTIC_SUITE" = app-config ]; then
+            cd packages/app
+            GITHUB_ACTIONS=false bun test --conditions=browser --preload ./happydom.ts ./test-browser/playwright-config.test.ts
+            exit $?
+          fi
+          if [ "$DIAGNOSTIC_SUITE" = vcs ]; then
+            GIT_TRACE=1 GIT_TRACE_PERFORMANCE=1 GITHUB_ACTIONS=false bun run --cwd packages/core test ./test/vcs.test.ts
             exit $?
           fi
           # Core spawns shells and CLI election tests spawn ten service contenders.
