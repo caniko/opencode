@@ -19,7 +19,7 @@ export default Runtime.handler(
     const { endpoint } = yield* ServerConnection.resolve()
     const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
     const response = yield* Effect.promise(() => client.plugin.list({ location: { directory: process.cwd() } }))
-    const config = yield* Config.Service
+    const config = yield* Config.Service.pipe(Effect.provide(Config.layer))
     const global = yield* Global.Service
     const info = yield* config.get()
     const discovered = yield* Effect.promise(() =>

@@ -8,7 +8,7 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { SessionError } from "@opencode/schema/session-error"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
-import type { JsonSchema, Types } from "effect"
+import type { JsonSchema, Schema, Types } from "effect"
 import type { ModelHooks } from "./registration.js"
 
 export interface SessionPrompt {
@@ -45,6 +45,17 @@ export interface SessionCompactionResult {
 export interface SessionCompaction extends SessionContext {
   /** Set to use this compaction and skip the model request. */
   result?: SessionCompactionResult
+}
+
+/** Runs before local or provider-native context reduction. A registered owner
+ * must return a complete plan or a failure; omission never falls back to loss. */
+export interface SessionCompactionPlan {
+  readonly sessionID: Session.ID
+  readonly model: Model.Ref
+  readonly records: ReadonlyArray<Schema.Codec.Encoded<typeof SessionMessage.Info>>
+  readonly budgetTokens: number
+  result?: SessionCompactionResult & { recent: string; custody: string; planID: string }
+  failure?: string
 }
 
 export interface SessionGenerate extends SessionContext {}
@@ -139,6 +150,7 @@ export interface SessionHooks {
   readonly prompt: SessionPrompt
   readonly context: SessionContext
   readonly compaction: SessionCompaction
+  readonly "compaction.plan": SessionCompactionPlan
   readonly generate: SessionGenerate
   readonly title: SessionTitle
   readonly "model.request": SessionModelRequest

@@ -13,6 +13,7 @@ test("standalone server exits when its owner is killed", async () => {
     stdout: "pipe",
     stderr: "pipe",
   })
+  const stderr = new Response(owner.stderr).text()
   const line = await Promise.race([
     readLine(owner.stdout, "STANDALONE_READY "),
     Bun.sleep(10_000).then(() => undefined),
@@ -30,6 +31,11 @@ test("standalone server exits when its owner is killed", async () => {
     await owner.exited
 
     expect(await waitForExit(pid)).toBe(true)
+  } catch (cause) {
+    const state = { pid: owner.pid, exitCode: owner.exitCode }
+    owner.kill("SIGKILL")
+    await owner.exited
+    throw new Error(`Standalone owner failed: ${JSON.stringify(state)}\n${(await stderr).trim()}`, { cause })
   } finally {
     owner.kill("SIGKILL")
     await owner.exited

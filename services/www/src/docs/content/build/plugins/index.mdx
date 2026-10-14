@@ -1376,6 +1376,36 @@ Request overrides follow these rules:
 - Deleting an override or setting it to `undefined` falls back to configured defaults rather than removing them.
 - Raw HTTP body overlays apply after protocol lowering and can override the resulting fields.
 
+#### Pre-reduction custody
+
+Use `compaction.plan` to preserve original evidence and own the complete checkpoint before local or provider-native
+history reduction. `records` contains encoded native history across earlier compactions; `budgetTokens` is the
+remaining checkpoint allowance after current system context, tool definitions and output headroom.
+
+```ts
+await ctx.session.hook("compaction.plan", async (event) => {
+  try {
+    const plan = await preserveAndPlan(event.records, event.budgetTokens)
+    event.result = {
+      summary: plan.summary,
+      recent: plan.recent,
+      custody: plan.sourceDigest,
+      planID: plan.digest,
+    }
+  } catch (error) {
+    event.failure = String(error)
+  }
+})
+```
+
+- A registered owner must supply a nonempty summary, a retained-tail string and two 64-character lowercase
+  hexadecimal receipt identities. An invalid, missing or over-budget result fails compaction.
+- `failure` blocks reduction. OpenCode does not fall back to standard summarization after an owner fails.
+- The owner must establish durable source custody itself. OpenCode checks the result's shape and budget;
+  it does not inspect a plugin's external database or attest to semantic recall.
+- Original native messages remain in OpenCode history. Successful installation records receipt identities in
+  compaction metadata and resets provider context through the existing completion lifecycle.
+
 #### Provider options
 
 Provider options use the selected protocol's semantic option names, not raw HTTP body fields. Scope provider-specific

@@ -50,6 +50,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
 import { Tool } from "@opencode/core/tool"
+import { McpTool } from "@opencode/core/tool/mcp"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Stream } from "effect"
 import { testEffect } from "./lib/effect"
@@ -158,6 +159,7 @@ const it = testEffect(
       McpInstructions.node.replace(mcp),
       PluginSupervisor.node.replace(Layer.empty),
       Tool.node.replace(tools),
+      McpTool.node.replace(Layer.succeed(McpTool.Service, { flush: Effect.void })),
       Location.node.replace(Location.boundNode({ directory: AbsolutePath.make("/project") })),
     ],
   ),

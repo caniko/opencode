@@ -574,6 +574,127 @@ it.effect("native compaction fails without a model call on a route that cannot c
   }),
 )
 
+it.effect("pre-reduction custody owns the whole checkpoint and fails closed", () =>
+  Effect.gen(function* () {
+    requests = []
+    const hooks = yield* PluginHooks.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_custody_plan"))
+    const messages = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user" as const,
+        text: "Exact active instruction",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    let refuse = false
+    yield* hooks.register("session", "compaction.plan", (event) =>
+      Effect.sync(() => {
+        expect(event.records.filter((record) => record.type === "user")).toHaveLength(1)
+        expect(JSON.stringify(event.records)).toContain("Exact active instruction")
+        expect(event.budgetTokens).toBeGreaterThan(0)
+        if (refuse) event.failure = "Source custody unavailable"
+        else
+          event.result = {
+            summary: "Exact active instruction",
+            recent: "",
+            custody: "a".repeat(64),
+            planID: "b".repeat(64),
+          }
+      }),
+    )
+    expect(yield* compactManually(session, messages)).toEqual({ status: "completed" })
+    expect(requests).toHaveLength(0)
+    expect(yield* store.context(session.id)).toMatchObject([
+      { type: "compaction", summary: "Exact active instruction", recent: "" },
+    ])
+    refuse = true
+    expect(yield* compactManually(session, messages)).toMatchObject({
+      status: "failed",
+      error: { type: "compaction.failed", message: "Source custody unavailable" },
+    })
+    expect(requests).toHaveLength(0)
+  }),
+)
+
+it.effect("custody sees original users across repeated, automatic and native overflow compaction", () =>
+  Effect.gen(function* () {
+    requests = []
+    const bus = yield* Bus.Service
+    const store = yield* SessionStore.Service
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const session = yield* insertSession(Session.ID.make("ses_custody_history"))
+    const user = SessionMessage.ID.create()
+    yield* bus.publish(SessionEvent.InboxEnqueued, {
+      sessionID: session.id,
+      inboxID: user,
+      item: { type: "user", delivery: "steer", payload: { text: "Keep original requirements across checkpoints." } },
+    })
+    yield* bus.publish(SessionEvent.InboxDelivered, { sessionID: session.id, inboxID: user })
+    yield* bus.publish(SessionEvent.Compaction.Started, { sessionID: session.id, reason: "manual", recent: "" })
+    yield* bus.publish(SessionEvent.Compaction.Ended, {
+      sessionID: session.id,
+      reason: "manual",
+      text: "A lossy old checkpoint.",
+      recent: "",
+    })
+    let oversize = false
+    let calls = 0
+    yield* hooks.register("session", "compaction.plan", (event) =>
+      Effect.sync(() => {
+        calls++
+        expect(event.records.some((record) => record.id === user && record.type === "user")).toBe(true)
+        event.result = {
+          summary: oversize ? "x".repeat(event.budgetTokens * 5) : "Keep original requirements across checkpoints.",
+          recent: "",
+          custody: "a".repeat(64),
+          planID: "b".repeat(64),
+        }
+      }),
+    )
+    const current = yield* store.context(session.id)
+    expect(current.some((message) => message.type === "user")).toBe(false)
+    expect(yield* compactManually(session, current)).toEqual({ status: "completed" })
+    const assistant = Schema.decodeUnknownSync(SessionMessage.Assistant)({
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      agent: Agent.defaultID,
+      model: resolved.ref,
+      content: [{ type: "text", text: "The unresolved work still needs repair." }],
+      tokens: { input: 200_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 2, completed: 3 },
+    })
+    const context = loaded(session, [...(yield* store.context(session.id)), assistant])
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "completed" })
+    const native = { ...context, model: { ...context.model, compaction: { type: "native" as const } } }
+    expect(yield* compaction.compact({ reason: "auto", context: native })).toEqual({
+      status: "completed",
+    })
+    expect(
+      yield* compaction.compact({
+        reason: "overflow",
+        context: native,
+      }),
+    ).toMatchObject({ status: "completed" })
+    oversize = true
+    expect(yield* compaction.compact({ reason: "auto", context })).toMatchObject({
+      status: "failed",
+    })
+    expect(calls).toBe(5)
+    expect(requests).toHaveLength(0)
+    expect(
+      (yield* store.context(session.id)).some(
+        (message) =>
+          message.type === "compaction" &&
+          message.status === "completed" &&
+          message.summary === "Keep original requirements across checkpoints.",
+      ),
+    ).toBe(true)
+  }),
+)
+
 it.effect("forked session compaction reuses the fork root prompt cache key", () =>
   Effect.gen(function* () {
     requests = []

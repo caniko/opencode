@@ -56,7 +56,10 @@ export default Runtime.handler(Commands, (input) =>
       session !== undefined &&
       (yield* Effect.tryPromise({
         try: () =>
-          findSession(OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) }), session),
+          findSession(
+            OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) }),
+            session,
+          ),
         catch: (cause) => new Error(errorMessage(cause)),
       })) !== undefined
     const updater = yield* Updater.Service
@@ -85,7 +88,7 @@ export default Runtime.handler(Commands, (input) =>
         Effect.forkScoped({ startImmediately: true }),
       )
     preflight.loading()
-    const config = yield* Config.Service
+    const config = yield* Config.Service.pipe(Effect.provide(Config.layer))
     const npm = yield* Npm.Service
     const fileSystem = yield* FileSystem.FileSystem
     const runServicePromise = Effect.runPromiseWith(Context.make(FileSystem.FileSystem, fileSystem))

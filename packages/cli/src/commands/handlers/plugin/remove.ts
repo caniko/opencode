@@ -15,7 +15,7 @@ export default Runtime.handler(
     const global = yield* Global.Service
     const configPath = yield* Effect.promise(() => resolveConfigPath(global.config))
     const server = yield* Effect.promise(() => removePluginConfig(configPath, input.package))
-    const config = yield* Config.Service
+    const config = yield* Config.Service.pipe(Effect.provide(Config.layer))
     const info = yield* config.get()
     const tui = configured(info.plugins, input.package)
     if (tui)

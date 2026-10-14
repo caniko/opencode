@@ -50,6 +50,10 @@ export const Input = Schema.Struct({
     description:
       "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
   }),
+  environment: Schema.optionalKey(Schema.Literals(["project", "bootstrap"])).annotate({
+    description:
+      "Use project preparation by default, or explicitly select bootstrap host tools for environment repair.",
+  }),
   timeout: Schema.optionalKey(NonNegativeInt).annotate({
     description: `Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to ${DEFAULT_TIMEOUT_MS} for foreground commands. Background commands have no timeout by default.`,
   }),
@@ -113,7 +117,11 @@ export const Plugin = {
     const permission = yield* Permission.Service
     const config = yield* Config.Service
 
-    const prepare = Effect.fn("ShellTool.prepare")(function* (invocation: ShellCreateBefore, context: Tool.Context) {
+    const prepare = Effect.fn("ShellTool.prepare")(function* (
+      invocation: ShellCreateBefore,
+      context: Tool.Context,
+      authorized?: Pick<ShellCreateBefore, "command" | "cwd" | "shell">,
+    ) {
       const source = {
         type: "tool" as const,
         messageID: context.messageID,
@@ -122,24 +130,31 @@ export const Plugin = {
       const target = yield* access.resolve({ path: invocation.cwd, kind: "directory" })
       invocation.cwd = target.absolute
       const timeout = invocation.timeout
-      const portable = Config.latest(yield* config.entries(), "experimental")?.portable_shell_scanner === true
-      const parsed = yield* ShellParse.scan(invocation.command, invocation.shell, target.absolute, { portable })
-      const directories = yield* Effect.forEach(parsed.directories, (directory) =>
-        access.resolve({
-          path: FileAccess.resolvePath(target.absolute, directory),
-          kind: "directory",
-        }),
-      )
-      yield* access.authorizeExternal([target, ...directories], context)
-      if (parsed.commands.length > 0)
+      if (
+        !authorized ||
+        authorized.command !== invocation.command ||
+        authorized.cwd !== invocation.cwd ||
+        authorized.shell !== invocation.shell
+      ) {
+        const portable = Config.latest(yield* config.entries(), "experimental")?.portable_shell_scanner === true
+        const parsed = yield* ShellParse.scan(invocation.command, invocation.shell, target.absolute, { portable })
+        const directories = yield* Effect.forEach(parsed.directories, (directory) =>
+          access.resolve({
+            path: FileAccess.resolvePath(target.absolute, directory),
+            kind: "directory",
+          }),
+        )
+        yield* access.authorizeExternal([target, ...directories], context)
+        // Even a comment-only request can run environment preparation hooks.
         yield* permission.assert({
           action: name,
-          resources: parsed.commands.map((command) => command.resource),
+          resources: parsed.commands.length ? parsed.commands.map((command) => command.resource) : [invocation.command],
           save: parsed.commands.map((command) => command.save),
           sessionID: context.sessionID,
           agent: context.agent,
           source,
         })
+      }
       // Approval can outlive the directory, so validate immediately before spawning.
       const workdir = yield* Environment.typeFollowing(environment.files, target.absolute).pipe(
         Effect.catchTag("Environment.NotFound", () =>
@@ -197,13 +212,15 @@ export const Plugin = {
             Effect.gen(function* () {
               const timeout = input.background === true ? (input.timeout ?? 0) : (input.timeout ?? DEFAULT_TIMEOUT_MS)
               let finalTimeout = timeout
+              let authorized: Pick<ShellCreateBefore, "command" | "cwd" | "shell"> | undefined
               const info = yield* shell.create(
                 {
                   command: input.command,
                   cwd: input.workdir,
                   timeout,
                   shell: yield* compatibleShell,
-                  metadata: { sessionID: context.sessionID },
+                  environment: input.environment,
+                  metadata: { sessionID: context.sessionID, toolCallID: context.id },
                 },
                 (invocation) =>
                   Effect.gen(function* () {
@@ -211,7 +228,14 @@ export const Plugin = {
                     invocation.env.OPENCODE = "1"
                     invocation.env.AI_AGENT ||= "opencode"
                     invocation.env.OPENCODE_SESSION_ID = context.sessionID
-                    finalTimeout = yield* prepare(invocation, context)
+                    finalTimeout = yield* prepare(invocation, context, authorized)
+                  }),
+                (invocation) =>
+                  Effect.gen(function* () {
+                    yield* prepare(invocation, context)
+                    // Do not ask twice for an unchanged request: an approval
+                    // may be once-only. Hook rewrites still require approval.
+                    authorized = { command: invocation.command, cwd: invocation.cwd, shell: invocation.shell }
                   }),
               )
               yield* context.progress({ shellID: info.id })

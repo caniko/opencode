@@ -3,7 +3,7 @@ import { realpathSync, watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Schedule, Scope, Stream } from "effect"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -32,6 +32,7 @@ import { Permission } from "@opencode/core/permission"
 import { PermissionSaved } from "@opencode/core/permission/saved"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Shell } from "@opencode/core/shell"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { ID } from "@opencode/schema/shell"
@@ -996,7 +997,7 @@ describe("ShellTool", () => {
             Effect.gen(function* () {
               const sessions = yield* Session.Service
               yield* sessions.environment({ sessionID, variables: { AI_AGENT: "outer-agent" } })
-              const command = isWindows ? '[Console]::Out.Write($env:AI_AGENT)' : 'printf %s "$AI_AGENT"'
+              const command = isWindows ? "[Console]::Out.Write($env:AI_AGENT)" : 'printf %s "$AI_AGENT"'
               const settled = yield* executeTool(registry, call({ command }))
 
               expect(settled.status).toBe("completed")
@@ -1293,6 +1294,94 @@ describe("ShellTool", () => {
     }),
   )
 
+  it.live("denies project and bootstrap commands before environment preparation", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      denyAction = "shell"
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          const prepared = path.join(tmp.path, "prepared")
+          yield* hooks.register("shell", "create.before", () =>
+            Effect.promise(() => Bun.write(prepared, "prepared")).pipe(Effect.asVoid),
+          )
+          for (const environment of ["project", "bootstrap"] as const) {
+            for (const command of [helloCommand, "# no command body"]) {
+              const settled = yield* executeTool(registry, call({ command, environment }))
+              expect(settled.status).toBe("error")
+              expect(yield* Effect.promise(() => Bun.file(prepared).exists())).toBe(false)
+            }
+          }
+          const shell = yield* Shell.Service
+          expect(yield* shell.list()).toEqual([])
+        }),
+      )
+    }),
+  )
+
+  it.live("carries bootstrap choice and native invocation identity to preparation", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              expect({
+                sessionID: event.sessionID,
+                environment: event.environment,
+                toolCallID: event.toolCallID,
+                invocationID: event.invocationID,
+              }).toMatchObject({
+                sessionID,
+                environment: "bootstrap",
+                toolCallID: "call-bootstrap",
+                invocationID: expect.stringMatching(/^sh_/),
+              })
+              expect(event.signal?.aborted).toBe(false)
+              event.env.SHELL_ENV_CONTEXT_TEST = "bootstrap"
+            }),
+          )
+          const command = isWindows
+            ? "[Console]::Out.Write($env:SHELL_ENV_CONTEXT_TEST)"
+            : 'printf %s "$SHELL_ENV_CONTEXT_TEST"'
+          const settled = yield* executeTool(registry, call({ command, environment: "bootstrap" }, "call-bootstrap"))
+          expect(settled.status).toBe("completed")
+          expect(settled.content).toEqual([{ type: "text", text: "bootstrap" }])
+          expect(assertions).toHaveLength(1)
+        }),
+      )
+    }),
+  )
+
+  it.live("authorizes hook-transformed commands again before spawning", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              denyAction = "shell"
+              event.command = cwdCommand
+            }),
+          )
+          const settled = yield* executeTool(registry, call({ command: helloCommand }))
+          expect(settled.status).toBe("error")
+          expect(assertions.map((input) => input.resources)).toEqual([
+            [isWindows ? "Start-Sleep -Milliseconds 100" : helloCommand],
+            isWindows ? ["Get-Location", "Start-Sleep -Milliseconds 100"] : [cwdCommand],
+          ])
+          const shell = yield* Shell.Service
+          expect(yield* shell.list()).toEqual([])
+        }),
+      )
+    }),
+  )
+
   for (const shell of ["sh", "zsh"]) {
     const test = isWindows || !Bun.which(shell) ? it.live.skip : it.live
     test(
@@ -1362,9 +1451,7 @@ describe("ShellTool", () => {
               expect(settled.status).toBe("completed")
               expect(settled.metadata).toMatchObject({ exit: 7, truncated: false })
               expect(settled.content?.[0]).toEqual({ type: "text", text: "body" })
-              expect(settled.content?.[1]).toMatchObject(
-                Expected.text(expect.stringContaining("Exited with code 7")),
-              )
+              expect(settled.content?.[1]).toMatchObject(Expected.text(expect.stringContaining("Exited with code 7")))
             }),
           ),
         )
@@ -1391,9 +1478,7 @@ describe("ShellTool", () => {
                 if (!content || content.type !== "text") throw new Error("Expected text content")
                 expect(content.text.includes("output-start")).toBe(false)
                 expect(content.text.includes("output-end")).toBe(true)
-                expect(content).toMatchObject(
-                  Expected.text(expect.stringContaining("full output saved to ")),
-                )
+                expect(content).toMatchObject(Expected.text(expect.stringContaining("full output saved to ")))
               }),
             ),
           )
@@ -1719,7 +1804,7 @@ describe("ShellTool", () => {
               const shell = yield* Shell.Service
               const settled = yield* executeTool(
                 registry,
-                call({ command: idleCommand, background: true }, "call-external-signal"),
+                call({ command: `printf started > started; ${idleCommand}`, background: true }, "call-external-signal"),
               )
               const shellID = settled.metadata?.shellID
               expect(typeof shellID).toBe("string")
@@ -1729,6 +1814,11 @@ describe("ShellTool", () => {
               expect(typeof info.pid).toBe("number")
               if (info.pid === undefined) return
 
+              // The PID is visible before launcher setup completes; signal the running command.
+              yield* Effect.promise(() => Bun.file(path.join(tmp.path, "started")).exists()).pipe(
+                Effect.repeat({ until: (exists) => exists, schedule: Schedule.spaced("10 millis") }),
+                Effect.timeout("2 seconds"),
+              )
               process.kill(-info.pid, "SIGTERM")
               const result = yield* shell.wait(id).pipe(Effect.timeoutOption(Duration.seconds(1)))
               expect(result._tag).toBe("Some")

@@ -35,7 +35,7 @@ export default Runtime.handler(
       return
     }
 
-    const config = yield* Config.Service
+    const config = yield* Config.Service.pipe(Effect.provide(Config.layer))
     yield* config.update((draft) => {
       if (configured(draft.plugins, input.package)) return
       draft.plugins = [...(draft.plugins ?? []), input.package]

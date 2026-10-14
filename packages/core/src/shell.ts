@@ -5,6 +5,7 @@ import { Context, Deferred, Duration, Effect, Fiber, Latch, Layer, Schema, Sched
 import { ChildProcess } from "effect/unstable/process"
 import { produce } from "immer"
 import { Shell } from "@opencode/schema/shell"
+import { ProcessGovernor } from "@opencode/util/process-governor"
 import { AppProcess } from "@opencode/util/process"
 import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
@@ -36,6 +37,7 @@ export const DIRECTORY = "shell"
 type Info = Shell.Info
 type CreateInput = Shell.CreateInput & {
   shell?: string
+  environment?: "project" | "bootstrap"
 }
 
 type Active = {
@@ -63,6 +65,7 @@ export interface Interface {
   readonly create: <E = never, R = never>(
     input: CreateInput,
     before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
+    beforePreparation?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
   ) => Effect.Effect<Shell.Info, E | AppProcess.AppProcessError, R>
   // Currently running commands only; exited shells are retained for get/output but excluded here.
   readonly list: () => Effect.Effect<Shell.Info[]>
@@ -254,14 +257,19 @@ const layer = () =>
       const create = Effect.fn("Shell.create")(function* <E = never, R = never>(
         input: CreateInput,
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
+        beforePreparation?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
         const sessionID = input.metadata?.sessionID
         const sessionEnvironment =
           location.workspaceID === undefined && Schema.is(SessionSchema.ID)(sessionID)
             ? yield* environments.get(sessionID)
             : undefined
+        const id = Shell.ID.ascending()
         const invocation: ShellCreateBefore = {
           sessionID: Schema.is(SessionSchema.ID)(sessionID) ? sessionID : undefined,
+          environment: input.environment ?? "project",
+          invocationID: id,
+          toolCallID: typeof input.metadata?.toolCallID === "string" ? input.metadata.toolCallID : undefined,
           command: input.command,
           cwd: input.cwd ?? location.directory,
           timeout: input.timeout ?? 0,
@@ -272,6 +280,10 @@ const layer = () =>
             OPENCODE_TERMINAL: "1",
           },
         }
+        // Preparation hooks can execute project code. The caller authorizes
+        // the original request before those effects, then checks transformed
+        // commands through the existing pre-spawn callback below.
+        if (beforePreparation) yield* beforePreparation(invocation)
         yield* Effect.acquireUseRelease(
           Effect.sync(() => new AbortController()),
           (controller) =>
@@ -290,7 +302,6 @@ const layer = () =>
         )
         if (before) yield* before(invocation)
 
-        const id = Shell.ID.ascending()
         const args = ShellSelect.args(invocation.shell, invocation.command)
         const file = path.join(outputDir, `${id}.out`)
 
@@ -309,12 +320,43 @@ const layer = () =>
         // the managing fiber keeps its scope open until the command terminates (it awaits `done` at the
         // end). `create` returns once `ready` resolves with the registered command.
         const ready = Deferred.makeUnsafe<Active, AppProcess.AppProcessError>()
-        runFork(
+        const worker = runFork(
           Effect.scoped(
             Effect.gen(function* () {
+              const lease = yield* Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const admission = ProcessGovernor.acquire(ProcessGovernor.classifyShell(invocation.command)).pipe(
+                    Effect.catchDefect((cause) =>
+                      Effect.fail(new AppProcess.AppProcessError({ command: invocation.command, cause })),
+                    ),
+                  )
+                  const lease = yield* restore(
+                    invocation.timeout === 0
+                      ? admission
+                      : admission.pipe(
+                          Effect.timeoutOrElse({
+                            duration: Duration.millis(invocation.timeout),
+                            orElse: () =>
+                              Effect.fail(
+                                new AppProcess.AppProcessError({
+                                  command: invocation.command,
+                                  cause: new Error("Timed out waiting for process governor"),
+                                }),
+                              ),
+                          }),
+                        ),
+                  )
+                  yield* Effect.addFinalizer(() => lease.release)
+                  return lease
+                }),
+              )
+              const guarded = yield* Effect.try({
+                try: () => ProcessGovernor.handoff(lease, invocation.shell, args, false),
+                catch: (cause) => new AppProcess.AppProcessError({ command: invocation.command, cause }),
+              })
               const handle = yield* environment.spawner
                 .spawn(
-                  ChildProcess.make(invocation.shell, args, {
+                  ChildProcess.make(guarded.command, guarded.args, {
                     cwd: invocation.cwd,
                     env: invocation.env,
                     stdin: "ignore",
@@ -421,7 +463,9 @@ const layer = () =>
                   )
                 })
 
-              yield* command.timeout(invocation.timeout)
+              yield* command.timeout(
+                invocation.timeout === 0 ? 0 : Math.max(1, invocation.timeout - (Date.now() - info.time.started)),
+              )
 
               runFork(
                 handle.exitCode.pipe(
@@ -446,7 +490,7 @@ const layer = () =>
           ).pipe(Effect.catchTag("AppProcessError", (error) => Deferred.fail(ready, error))),
         )
 
-        const command = yield* Deferred.await(ready)
+        const command = yield* Deferred.await(ready).pipe(Effect.onInterrupt(() => Fiber.interrupt(worker)))
         return command.info
       })
 
