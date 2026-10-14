@@ -22,6 +22,6 @@ gh workflow run test.yml --repo caniko/opencode --ref vendor-release-v2 -f suite
 
 The two focused selections run fixed keeper paths on Linux and Windows. Timeline
 diagnostics retain traces on every attempt plus paging-state JSON on failure.
-CLI diagnostics retain child output and pre-cleanup exit state in failure logs.
+CLI diagnostics enable debug logging and retain child output and pre-cleanup exit state in failure logs.
 Only `all` exercises the complete unit/E2E gate; focused runs do not establish
 full candidate acceptance. Push and pull-request events retain the full selection.

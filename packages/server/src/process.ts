@@ -1,8 +1,7 @@
 export * as ServerProcess from "./process"
 
 import { NodeHttpServer } from "@effect/platform-node"
-import { Bus } from "@opencode/core/bus"
-import { SessionRestart } from "@opencode/core/session/execution/restart"
+import type { SessionRestart } from "@opencode/core/session/execution/restart"
 import { InstallationEvent } from "@opencode/schema/installation-event"
 import { hasPtyConnectTicketURL } from "@opencode/protocol/groups/pty"
 import { hasPersistentPtyConnectTicketURL } from "@opencode/protocol/groups/persistent-pty"
@@ -15,7 +14,6 @@ import { ServerAuth } from "./auth"
 import { isAllowedCorsOrigin } from "./cors"
 import { authorizedRequest, unauthorizedResponse } from "./middleware/authorization"
 import { withoutParentSpan } from "./request-tracing"
-import { createRoutes } from "./routes"
 import { ServerInfo } from "./server-info"
 import { Status } from "./service-status"
 import type { ServerOptions } from "./options"
@@ -91,6 +89,8 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   )
 
   const boot = Effect.gen(function* () {
+    // Losing contenders must not load the application graph before the winner binds and registers.
+    const { createRoutes } = yield* Effect.promise(() => import("./routes"))
     const context = yield* Layer.buildWithScope(
       createRoutes(
         {
@@ -102,12 +102,14 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
       applicationScope,
     )
     if (lifecycle) {
+      const { SessionRestart } = yield* Effect.promise(() => import("@opencode/core/session/execution/restart"))
       yield* installRestartContinuity(Context.get(context, SessionRestart.Service)).pipe(
         Effect.provideService(Scope.Scope, applicationScope),
       )
     }
     yield* Ref.set(application, Option.some(Context.get(context, HttpRouter.HttpRouter).asHttpEffect()))
     yield* status.ready
+    const { Bus } = yield* Effect.promise(() => import("@opencode/core/bus"))
     const bus = Context.get(context, Bus.Service)
     return {
       address: bound.http.address,

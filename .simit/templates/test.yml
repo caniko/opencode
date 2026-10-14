@@ -61,7 +61,7 @@ jobs:
             exit 0
           fi
           bun x turbo@2.10.2 ls --affected --filter=@opencode/app --output=json > affected.json
-          bun -e 'const result = await Bun.file("affected.json").json(); console.log(`app=${result.packages.count > 0}`)' >> "$GITHUB_OUTPUT"
+          bun -e 'const result = await Bun.file("affected.json").json(); console.log("app=" + (result.packages.count > 0))' >> "$GITHUB_OUTPUT"
 
   unit:
     name: unit (${{ matrix.group == 'all' && matrix.settings.name || format('{0}, {1}', matrix.settings.name, matrix.group) }})
@@ -145,6 +145,7 @@ jobs:
         timeout-minutes: 20
         run: |
           if [ "$DIAGNOSTIC_SUITE" = cli-startup ]; then
+            export OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=DEBUG
             GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts
             exit $?
           fi
