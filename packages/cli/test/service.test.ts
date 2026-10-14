@@ -571,6 +571,7 @@ test("a failed service stays registered and owns the selected port until stopped
   const command = [process.execPath, path.join(import.meta.dir, "../src/index.ts"), "serve", "--service"]
   const registration = path.join(root, "state", "opencode", "service-local.json")
   const owner = Bun.spawn(command, { env, stderr: "pipe", stdout: "ignore" })
+  const output = new Response(owner.stderr).text()
 
   try {
     const info = await waitForInfo(registration)
@@ -586,6 +587,11 @@ test("a failed service stays registered and owns the selected port until stopped
     await Effect.runPromise(Service.stop({ file: registration }).pipe(Effect.provide(NodeFileSystem.layer)))
     await owner.exited
     expect(await Bun.file(registration).exists()).toBe(false)
+  } catch (cause) {
+    const state = { pid: owner.pid, exitCode: owner.exitCode }
+    owner.kill("SIGTERM")
+    await owner.exited
+    throw new Error(`Failed service keeper: ${JSON.stringify(state)}\n${(await output).trim()}`, { cause })
   } finally {
     owner.kill("SIGTERM")
     await owner.exited
