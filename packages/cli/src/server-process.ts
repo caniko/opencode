@@ -68,7 +68,9 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       // Keep a package-manager or curl install replaceable while the service runs; Desktop updates its own copy.
       if (options.mode === "service" && process.platform === "win32" && RetainedImage.installed(global.home))
         yield* RetainedImage.retain(global.cache, "service")
+      yield* Effect.logDebug("loading server process module", { mode: options.mode })
       const { start } = yield* Effect.promise(() => import("@opencode/server/process"))
+      yield* Effect.logDebug("loaded server process module")
       const environmentPassword = yield* Env.password
       // Keep the lease credential out of the environment inherited by tools.
       if (options.mode === "stdio") {

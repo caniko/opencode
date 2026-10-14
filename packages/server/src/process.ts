@@ -52,7 +52,9 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   const port = Option.fromNullishOr(options.port)
   const shutdown = yield* Latch.make()
   const status = yield* Status.make()
+  yield* Effect.logDebug("binding server listener", { hostname, port: Option.getOrUndefined(port) })
   const bound = yield* listen({ hostname, port })
+  yield* Effect.logDebug("bound server listener")
   const urls = () => {
     const address = bound.server.address()
     if (address === null || typeof address === "string") return []
@@ -90,7 +92,9 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
 
   const boot = Effect.gen(function* () {
     // Losing contenders must not load the application graph before the winner binds and registers.
+    yield* Effect.logDebug("loading server application routes")
     const { createRoutes } = yield* Effect.promise(() => import("./routes"))
+    yield* Effect.logDebug("loaded server application routes")
     const context = yield* Layer.buildWithScope(
       createRoutes(
         {
@@ -101,6 +105,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
       ).pipe(Layer.provideMerge(NodeHttpServer.layerHttpServices)),
       applicationScope,
     )
+    yield* Effect.logDebug("built server application layers")
     if (lifecycle) {
       const { SessionRestart } = yield* Effect.promise(() => import("@opencode/core/session/execution/restart"))
       yield* installRestartContinuity(Context.get(context, SessionRestart.Service)).pipe(
@@ -109,6 +114,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
     }
     yield* Ref.set(application, Option.some(Context.get(context, HttpRouter.HttpRouter).asHttpEffect()))
     yield* status.ready
+    yield* Effect.logDebug("server application ready")
     const { Bus } = yield* Effect.promise(() => import("@opencode/core/bus"))
     const bus = Context.get(context, Bus.Service)
     return {
