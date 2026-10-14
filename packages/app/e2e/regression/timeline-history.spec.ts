@@ -80,9 +80,23 @@ test.describe("timeline history", () => {
     const expectedMessages = fixture.expected.targetMessageIDs
     const seenParts = new Set<string>()
     const seenMessages = new Set<string>()
+    // Keep intermediate polling observations too: the outer loop may miss a range
+    // that only mounts while a prepend or deferred measurement is settling.
+    const samples: {
+      phase: string
+      started: number
+      ended: number
+      state: Awaited<ReturnType<typeof visibleTimeline>>
+    }[] = []
+    const sample = async (phase: string) => {
+      const state = await visibleTimeline(page)
+      samples.push({ phase, ...loads, state })
+      if (samples.length > 512) samples.shift()
+      return state
+    }
 
     for (;;) {
-      const state = await visibleTimeline(page)
+      const state = await sample("step")
       expectOrdered(expectedParts, state.parts, "mounted parts")
       expectOrdered(expectedParts, state.visibleParts, "visible parts")
       expectOrdered(expectedMessages, state.messages, "mounted messages")
@@ -97,7 +111,7 @@ test.describe("timeline history", () => {
         let previous = ""
         await expect
           .poll(async () => {
-            const next = (await visibleTimeline(page)).signature
+            const next = (await sample("prepend")).signature
             const stable = next === previous
             previous = next
             return stable
@@ -113,7 +127,7 @@ test.describe("timeline history", () => {
       }, state.mountedAbove)
       await expect
         .poll(async () => {
-          const next = await visibleTimeline(page)
+          const next = await sample("scroll")
           return {
             ready: held.length > 0 || (next.signature !== state.signature && next.covered),
             scrollTop: next.scrollTop,
@@ -132,7 +146,8 @@ test.describe("timeline history", () => {
             contentType: "application/json",
             body: JSON.stringify({
               previous: state,
-              current: await visibleTimeline(page),
+              current: await sample("failure"),
+              samples,
               loads,
               held: held.length,
               unseenParts: expectedParts.filter((id) => !seenParts.has(id)),
@@ -390,6 +405,14 @@ function visibleTimeline(page: Page) {
       // timeline requests the next older page instead.
       covered: scroller.scrollTop < 200 || firstRowTop <= view.top + 1,
       mountedAbove: Math.max(80, Math.floor(view.top - firstRowTop)),
+      scrollHeight: scroller.scrollHeight,
+      clientHeight: scroller.clientHeight,
+      pendingMarkdown: scroller.querySelectorAll('[data-component="markdown"]:not([data-markdown-ready])').length,
+      rows: [...scroller.querySelectorAll<HTMLElement>("[data-timeline-key]")].map((row) => ({
+        key: row.dataset.timelineKey,
+        top: Math.round(row.getBoundingClientRect().top - view.top),
+        height: Math.round(row.getBoundingClientRect().height),
+      })),
       errorToasts: document.querySelectorAll(".toast-v2--error").length,
       signature: JSON.stringify([
         Math.round(scroller.scrollTop),
