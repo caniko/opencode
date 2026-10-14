@@ -3,7 +3,7 @@ import { realpathSync, watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Schedule, Scope, Stream } from "effect"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -1804,7 +1804,7 @@ describe("ShellTool", () => {
               const shell = yield* Shell.Service
               const settled = yield* executeTool(
                 registry,
-                call({ command: idleCommand, background: true }, "call-external-signal"),
+                call({ command: `printf started > started; ${idleCommand}`, background: true }, "call-external-signal"),
               )
               const shellID = settled.metadata?.shellID
               expect(typeof shellID).toBe("string")
@@ -1814,6 +1814,11 @@ describe("ShellTool", () => {
               expect(typeof info.pid).toBe("number")
               if (info.pid === undefined) return
 
+              // The PID is visible before launcher setup completes; signal the running command.
+              yield* Effect.promise(() => Bun.file(path.join(tmp.path, "started")).exists()).pipe(
+                Effect.repeat({ until: (exists) => exists, schedule: Schedule.spaced("10 millis") }),
+                Effect.timeout("2 seconds"),
+              )
               process.kill(-info.pid, "SIGTERM")
               const result = yield* shell.wait(id).pipe(Effect.timeoutOption(Duration.seconds(1)))
               expect(result._tag).toBe("Some")
