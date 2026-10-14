@@ -114,9 +114,19 @@ test.describe("timeline history", () => {
       await expect
         .poll(async () => {
           const next = await visibleTimeline(page)
-          return held.length > 0 || (next.signature !== state.signature && next.covered)
+          return {
+            ready: held.length > 0 || (next.signature !== state.signature && next.covered),
+            scrollTop: next.scrollTop,
+            covered: next.covered,
+            mountedAbove: next.mountedAbove,
+            previousScrollTop: state.scrollTop,
+            delta: state.mountedAbove,
+            loads,
+            unseenParts: expectedParts.filter((id) => !seenParts.has(id)),
+            unseenMessages: expectedMessages.filter((id) => !seenMessages.has(id)),
+          }
         })
-        .toBe(true)
+        .toMatchObject({ ready: true })
     }
 
     expect(expectedParts.filter((id) => !seenParts.has(id))).toEqual([])
