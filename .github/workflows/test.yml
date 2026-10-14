@@ -205,6 +205,20 @@ jobs:
           bun run --cwd packages/cli --config="$GITHUB_WORKSPACE/bunfig.toml" --cpu-prof --cpu-prof-dir "$directory" --cpu-prof-name help-no-preload.cpuprofile src/index.ts --help > "$directory/help-no-preload.txt"
           diff -u "$directory/help.txt" "$directory/help-no-preload.txt"
 
+      - name: Profile server application imports
+        if: always() && inputs.suite == 'cli-startup'
+        timeout-minutes: 2
+        env:
+          GITHUB_ACTIONS: "false"
+        run: |
+          directory="$GITHUB_WORKSPACE/test-results/startup"
+          mkdir -p "$directory"
+          status=0
+          bun run --cwd packages/cli --cpu-prof --cpu-prof-dir "$directory" --cpu-prof-name routes.cpuprofile ../server/script/profile-startup.ts > "$directory/routes.txt" 2>&1 || status=$?
+          bun run --cwd packages/cli --config="$GITHUB_WORKSPACE/bunfig.toml" --cpu-prof --cpu-prof-dir "$directory" --cpu-prof-name routes-no-preload.cpuprofile ../server/script/profile-startup.ts > "$directory/routes-no-preload.txt" 2>&1 || status=$?
+          cat "$directory/routes.txt" "$directory/routes-no-preload.txt"
+          exit "$status"
+
       - name: Upload startup profiles
         if: always() && inputs.suite == 'cli-startup'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
