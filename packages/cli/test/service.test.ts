@@ -298,9 +298,13 @@ test("concurrent service processes elect one server", async () => {
     await winner?.exited
     expect(await Bun.file(registration).exists()).toBe(false)
   } catch (cause) {
+    const states = processes.map((child) => ({ pid: child.pid, exitCode: child.exitCode }))
     processes.forEach((process) => process.kill("SIGTERM"))
     await Promise.all(processes.map((process) => process.exited))
-    throw new Error((await Promise.all(output)).filter(Boolean).join("\n") || "Service election failed", { cause })
+    throw new Error(
+      `Service election failed: ${JSON.stringify(states)}\n${(await Promise.all(output)).join("\n").trim()}`,
+      { cause },
+    )
   } finally {
     processes.forEach((process) => process.kill("SIGTERM"))
     await Promise.all(processes.map((process) => process.exited))
@@ -352,8 +356,9 @@ test.each([
     await fs.writeFile(config, JSON.stringify({ cors }))
     const owner = Bun.spawn(
       [process.execPath, path.join(import.meta.dir, "../src/index.ts"), "serve", "--service", "--port", "0", ...args],
-      { env: isolatedEnv(root), stderr: "pipe", stdout: "ignore" },
+      { env: isolatedEnv(root), stderr: "pipe", stdout: "pipe" },
     )
+    const output = serviceOutput(owner)
     try {
       const info = await waitForInfo(registration)
       await Promise.all(
@@ -368,6 +373,11 @@ test.each([
         }),
       )
       expect((await Bun.file(config).json()).cors).toEqual(cors)
+    } catch (cause) {
+      const state = { pid: owner.pid, exitCode: owner.exitCode }
+      owner.kill("SIGTERM")
+      await owner.exited
+      throw new Error(`CORS service failed: ${JSON.stringify(state)}\n${(await output).trim()}`, { cause })
     } finally {
       owner.kill("SIGTERM")
       await owner.exited

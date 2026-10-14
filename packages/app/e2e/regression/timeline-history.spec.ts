@@ -127,6 +127,20 @@ test.describe("timeline history", () => {
           }
         })
         .toMatchObject({ ready: true })
+        .catch(async (error) => {
+          await test.info().attach("timeline-paging-state", {
+            contentType: "application/json",
+            body: JSON.stringify({
+              previous: state,
+              current: await visibleTimeline(page),
+              loads,
+              held: held.length,
+              unseenParts: expectedParts.filter((id) => !seenParts.has(id)),
+              unseenMessages: expectedMessages.filter((id) => !seenMessages.has(id)),
+            }),
+          })
+          throw error
+        })
     }
 
     expect(expectedParts.filter((id) => !seenParts.has(id))).toEqual([])
