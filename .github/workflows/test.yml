@@ -178,6 +178,25 @@ jobs:
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}
 
+      - name: Profile headless startup imports
+        if: always() && inputs.suite == 'cli-startup'
+        timeout-minutes: 2
+        run: |
+          directory="$GITHUB_WORKSPACE/test-results/startup"
+          mkdir -p "$directory"
+          bun run --cwd packages/cli --cpu-prof --cpu-prof-dir "$directory" --cpu-prof-name help.cpuprofile src/index.ts --help > "$directory/help.txt"
+          bun run --cwd packages/cli --config="$GITHUB_WORKSPACE/bunfig.toml" --cpu-prof --cpu-prof-dir "$directory" --cpu-prof-name help-no-preload.cpuprofile src/index.ts --help > "$directory/help-no-preload.txt"
+          diff -u "$directory/help.txt" "$directory/help-no-preload.txt"
+
+      - name: Upload startup profiles
+        if: always() && inputs.suite == 'cli-startup'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: startup-profiles-${{ matrix.settings.name }}
+          path: test-results/startup
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify published codemode package
         if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         working-directory: packages/codemode
