@@ -82,6 +82,28 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      - name: Provision Ripgrep for offline runtime tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$RUNNER_OS" in
+            Linux) platform=x86_64-unknown-linux-musl; extension=tar.gz ;;
+            Windows) platform=x86_64-pc-windows-msvc; extension=zip ;;
+          esac
+          directory="$RUNNER_TEMP/ripgrep-15.1.0"
+          mkdir -p "$directory"
+          archive="ripgrep-15.1.0-$platform.$extension"
+          gh release download 15.1.0 --repo BurntSushi/ripgrep --pattern "$archive" --dir "$directory"
+          if [ "$RUNNER_OS" = Linux ]; then
+            tar -xzf "$directory/$archive" -C "$directory"
+          else
+            unzip -q "$directory/$archive" -d "$directory"
+          fi
+          echo "$directory/ripgrep-15.1.0-$platform" >> "$GITHUB_PATH"
+
+      - name: Verify Ripgrep
+        run: rg --version
+
       - name: Test Effect simplification rules
         if: runner.os == 'Linux'
         run: bun run test:effect-simplification-rules

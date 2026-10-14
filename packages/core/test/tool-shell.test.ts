@@ -1373,7 +1373,7 @@ describe("ShellTool", () => {
           expect(settled.status).toBe("error")
           expect(assertions.map((input) => input.resources)).toEqual([
             [isWindows ? "Start-Sleep -Milliseconds 100" : helloCommand],
-            [isWindows ? "Start-Sleep -Milliseconds 100" : cwdCommand],
+            isWindows ? ["Get-Location", "Start-Sleep -Milliseconds 100"] : [cwdCommand],
           ])
           const shell = yield* Shell.Service
           expect(yield* shell.list()).toEqual([])
