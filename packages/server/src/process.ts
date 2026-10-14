@@ -1,6 +1,6 @@
 export * as ServerProcess from "./process"
 
-import { NodeHttpServer } from "@effect/platform-node"
+import { layerHttpServices, make } from "@effect/platform-node/NodeHttpServer"
 import type { SessionRestart } from "@opencode/core/session/execution/restart"
 import { InstallationEvent } from "@opencode/schema/installation-event"
 import { hasPtyConnectTicketURL } from "@opencode/protocol/groups/pty"
@@ -72,7 +72,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
       ),
       errorResponseLogger,
     )
-    .pipe(Effect.provide(NodeHttpServer.layerHttpServices), withoutParentSpan)
+    .pipe(Effect.provide(layerHttpServices), withoutParentSpan)
   if (lifecycle)
     yield* lifecycle.onListen(bound.http.address, shutdown.open.pipe(Effect.asVoid)).pipe(
       Effect.flatMap((cleanup) =>
@@ -102,7 +102,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
           password,
         },
         urls,
-      ).pipe(Layer.provideMerge(NodeHttpServer.layerHttpServices)),
+      ).pipe(Layer.provideMerge(layerHttpServices)),
       applicationScope,
     )
     yield* Effect.logDebug("built server application layers")
@@ -159,7 +159,7 @@ function bind(hostname: string, port: number) {
     const serverScope = yield* Scope.fork(parentScope)
     const server = createServer()
     return yield* Effect.gen(function* () {
-      const http = yield* NodeHttpServer.make(() => server, { port, host: hostname })
+      const http = yield* make(() => server, { port, host: hostname })
       yield* Effect.addFinalizer(() => Effect.sync(() => server.closeAllConnections()))
       return { http, server, scope: serverScope }
     }).pipe(

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
-import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import { runMain } from "@effect/platform-node/NodeRuntime"
+import { layer } from "@effect/platform-node/NodeServices"
 import { Cause, Effect } from "effect"
 import { getErrorReported } from "effect/Runtime"
 import { Commands } from "./commands/commands"
@@ -18,7 +19,7 @@ import { CpuProfile } from "./cpu-profile"
 
 if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
   const { askpass } = await import("./ssh-askpass")
-  process.exit(await Effect.runPromise(askpass.pipe(Effect.provide(NodeServices.layer))))
+  process.exit(await Effect.runPromise(askpass.pipe(Effect.provide(layer))))
 }
 
 const Handlers = Runtime.handlers(Commands, {
@@ -130,7 +131,7 @@ Effect.gen(function* () {
       channel: OPENCODE_CHANNEL,
     }),
   ),
-  Effect.provide(NodeServices.layer),
+  Effect.provide(layer),
   Effect.scoped,
   Effect.tap(() => Effect.sync(() => process.exit(process.exitCode ?? 0))),
   // runMain's default reporter logs the fatal cause to stdout. Write it to stderr instead: the
@@ -143,5 +144,5 @@ Effect.gen(function* () {
       process.stderr.write(Cause.pretty(cause) + "\n")
     }),
   ),
-  NodeRuntime.runMain({ disableErrorReporting: true }),
+  runMain({ disableErrorReporting: true }),
 )

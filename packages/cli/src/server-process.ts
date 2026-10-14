@@ -1,6 +1,6 @@
 export * as ServerProcess from "./server-process"
 
-import { NodeServices } from "@effect/platform-node"
+import { layer } from "@effect/platform-node/NodeServices"
 import { Service, type DiscoverOptions } from "@opencode/client/effect/service"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
@@ -38,7 +38,7 @@ export const run = Effect.fnUntraced(function* (options: Options) {
         ],
       }),
     ),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(layer),
   )
 })
 
