@@ -17,6 +17,7 @@ on:
         options:
           - all
           - timeline-history
+          - timeline-benchmark
           - cli-startup
           - npm-git
           - composer
@@ -72,7 +73,7 @@ jobs:
 
   unit:
     name: unit (${{ matrix.group == 'all' && matrix.settings.name || format('{0}, {1}', matrix.settings.name, matrix.group) }})
-    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["timeline-history", "composer"]'), inputs.suite)
+    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["timeline-history", "timeline-benchmark", "composer"]'), inputs.suite)
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -334,6 +335,13 @@ jobs:
         run: |
           if [ "$DIAGNOSTIC_SUITE" = timeline-history ]; then
             bun run --cwd packages/app test:e2e:built e2e/regression/timeline-history.spec.ts --trace on
+          elif [ "$DIAGNOSTIC_SUITE" = timeline-benchmark ]; then
+            directory="$GITHUB_WORKSPACE/test-results/timeline-benchmark"
+            mkdir -p "$directory"
+            OPENCODE_PERFORMANCE_TRACE_DIR="$directory" OPENCODE_PERFORMANCE_RUN_ID="$GITHUB_SHA-$RUNNER_OS" \
+              bun run --cwd packages/app test:e2e:built --config e2e/performance/playwright.config.ts \
+              timeline/session-timeline-benchmark.spec.ts --grep 'streams assistant text without remounting or oscillating' \
+              --workers=1 --retries=0 | tee "$directory/benchmark.log"
           elif [ "$DIAGNOSTIC_SUITE" = composer ]; then
             bun run --cwd packages/app test:e2e:built e2e/regression/composer.spec.ts --trace on
           else
@@ -345,13 +353,13 @@ jobs:
         timeout-minutes: 30
 
       - name: Verify service worker precaching and upgrades
-        if: env.E2E_ENABLED == 'true' && !contains(fromJSON('["timeline-history", "composer"]'), inputs.suite)
+        if: env.E2E_ENABLED == 'true' && !contains(fromJSON('["timeline-history", "timeline-benchmark", "composer"]'), inputs.suite)
         working-directory: packages/app
         run: bunx playwright test --config e2e/service-worker/playwright.config.ts
         timeout-minutes: 5
 
       - name: Run session UI component tests
-        if: ${{ !cancelled() && env.E2E_ENABLED == 'true' && !contains(fromJSON('["timeline-history", "composer"]'), inputs.suite) }}
+        if: ${{ !cancelled() && env.E2E_ENABLED == 'true' && !contains(fromJSON('["timeline-history", "timeline-benchmark", "composer"]'), inputs.suite) }}
         run: bun --cwd packages/session-ui test:components
         env:
           CI: true
@@ -369,3 +377,4 @@ jobs:
             packages/app/e2e/playwright-report
             packages/session-ui/component-tests/test-results
             packages/session-ui/component-tests/playwright-report
+            test-results/timeline-benchmark
