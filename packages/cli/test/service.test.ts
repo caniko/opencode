@@ -250,6 +250,7 @@ test("concurrent service processes elect one server", async () => {
   await fs.mkdir(path.join(root, "config", "opencode"), { recursive: true })
   await fs.writeFile(config, JSON.stringify({ port }))
   const processes = Array.from({ length: 10 }, () => Bun.spawn(command, { env, stderr: "pipe", stdout: "pipe" }))
+  const output = processes.map(serviceOutput)
 
   try {
     const info = await waitForInfo(registration)
@@ -260,11 +261,7 @@ test("concurrent service processes elect one server", async () => {
     )
 
     expect(exited).toEqual(losers.map(() => true))
-    const errors = await Promise.all(
-      losers.map(
-        async (process) => (await new Response(process.stdout).text()) + (await new Response(process.stderr).text()),
-      ),
-    )
+    const errors = await Promise.all(processes.flatMap((process, index) => (process !== winner ? [output[index]] : [])))
     expect(
       losers.map((process) => process.exitCode),
       errors.filter(Boolean).join("\n"),
@@ -300,6 +297,10 @@ test("concurrent service processes elect one server", async () => {
     await Effect.runPromise(Service.stop({ file: registration }).pipe(Effect.provide(NodeFileSystem.layer)))
     await winner?.exited
     expect(await Bun.file(registration).exists()).toBe(false)
+  } catch (cause) {
+    processes.forEach((process) => process.kill("SIGTERM"))
+    await Promise.all(processes.map((process) => process.exited))
+    throw new Error((await Promise.all(output)).filter(Boolean).join("\n") || "Service election failed", { cause })
   } finally {
     processes.forEach((process) => process.kill("SIGTERM"))
     await Promise.all(processes.map((process) => process.exited))
@@ -640,15 +641,24 @@ async function startManagedService(prefix: string, failBoot = false) {
   const owner = Bun.spawn([process.execPath, path.join(import.meta.dir, "../src/index.ts"), "serve", "--service"], {
     env: failBoot ? { ...serviceEnv(root), OPENCODE_DB: path.join(root, "database") } : serviceEnv(root),
     stderr: "pipe",
-    stdout: "ignore",
+    stdout: "pipe",
   })
+  const output = serviceOutput(owner)
   const info = await waitForInfo(registration).catch(async (cause) => {
     owner.kill("SIGTERM")
     await owner.exited
+    const diagnostic = await output
     await fs.rm(root, { recursive: true, force: true })
-    throw cause
+    throw new Error(diagnostic || "Managed service did not publish registration", { cause })
   })
   return { root, port, registration, owner, info }
+}
+
+function serviceOutput(child: Bun.Subprocess<"ignore", "pipe", "pipe">) {
+  // Drain both pipes during startup; failures must retain evidence before fixture cleanup.
+  return Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]).then((output) =>
+    output.join("\n"),
+  )
 }
 
 async function stopManagedService(service: Awaited<ReturnType<typeof startManagedService>>) {
