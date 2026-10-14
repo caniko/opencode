@@ -11,7 +11,6 @@ import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION }
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
-import { Config } from "./config"
 import { Npm } from "@opencode/util/npm"
 import { EffectFlock } from "@opencode/util/effect-flock"
 import { Heap } from "./heap"
@@ -102,6 +101,7 @@ Effect.gen(function* () {
     local: OPENCODE_LOCAL,
     args: process.argv.slice(2),
   })
+  // Terminal configuration belongs to its consuming handlers, not headless command startup.
   return yield* Runtime.run(Commands, Handlers, { version: OPENCODE_VERSION })
 }).pipe(
   Effect.catchCause((cause) =>
@@ -111,7 +111,6 @@ Effect.gen(function* () {
     }).pipe(Effect.andThen(Effect.failCause(cause))),
   ),
   Effect.annotateLogs({ role: "cli" }),
-  Effect.provide(Config.layer),
   Effect.provide(Updater.layer),
   Effect.provide(
     LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node, EffectFlock.node]), {

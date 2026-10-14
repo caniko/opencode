@@ -4,7 +4,6 @@ import { PrintLogs } from "../commands/commands"
 import { Spec } from "./spec"
 import { Global } from "@opencode/util/global"
 import { Updater } from "../services/updater"
-import { Config } from "../config"
 import { Npm } from "@opencode/util/npm"
 
 export type Input<Value> =
@@ -16,26 +15,18 @@ export type Input<Value> =
 
 type RuntimeHandler = (
   input: unknown,
-) => Effect.Effect<
-  void,
-  unknown,
-  FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Config.Service | Scope.Scope
->
+) => Effect.Effect<void, unknown, FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Scope.Scope>
 type Loader<Node extends Spec.Any> = () => Promise<{
   default: (
     input: Input<Node>,
-  ) => Effect.Effect<
-    void,
-    any,
-    FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Config.Service | Scope.Scope
-  >
+  ) => Effect.Effect<void, any, FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Scope.Scope>
 }>
 type ProvidedCommand = Command.Command<
   string,
   unknown,
   unknown,
   unknown,
-  FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Config.Service | Scope.Scope
+  FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Scope.Scope
 >
 
 export type Handlers<Node extends Spec.Any> = keyof Node["commands"] extends never
@@ -67,12 +58,14 @@ export function handlers<const Root extends Spec.Any>(root: Root, handlers: Hand
   function add(node: Spec.Any, value: RuntimeHandlers) {
     if (typeof value === "function") {
       result.push({ spec: node.spec, load: value as () => Promise<{ default: RuntimeHandler }> })
-      for (const alias of node.aliases) result.push({ spec: alias.spec, load: value as () => Promise<{ default: RuntimeHandler }> })
+      for (const alias of node.aliases)
+        result.push({ spec: alias.spec, load: value as () => Promise<{ default: RuntimeHandler }> })
       return
     }
     if (value.$) {
       result.push({ spec: node.spec, load: value.$ as () => Promise<{ default: RuntimeHandler }> })
-      for (const alias of node.aliases) result.push({ spec: alias.spec, load: value.$ as () => Promise<{ default: RuntimeHandler }> })
+      for (const alias of node.aliases)
+        result.push({ spec: alias.spec, load: value.$ as () => Promise<{ default: RuntimeHandler }> })
     }
     for (const [name, child] of Object.entries(node.commands)) add(child, value[name] as RuntimeHandlers)
   }
