@@ -125,18 +125,18 @@ export async function installTimelineStreamProbe(
       const scrollTo = Element.prototype.scrollTo
       const scrollTop = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!
       if (profileVisual) {
-        function measuredScrollTo(this: Element, options?: ScrollToOptions): void
-        function measuredScrollTo(this: Element, x: number, y: number): void
-        function measuredScrollTo(this: Element, first?: number | ScrollToOptions, second?: number) {
+        function measuredScrollTo(this: Element, ...args: [options?: ScrollToOptions] | [x: number, y: number]) {
           state.scroll.calls += 1
-          const top = typeof first === "object" ? first?.top : second
+          const top = typeof args[0] === "object" ? args[0].top : args[1]
           if (typeof top === "number") {
             const target = Math.min(top, this.scrollHeight - this.clientHeight)
             if (Math.abs(this.scrollTop - target) < 1) state.scroll.callNoops += 1
           }
           if (state.scroll.lastCallFrame === state.scroll.frame) state.scroll.sameFrameCalls += 1
           state.scroll.lastCallFrame = state.scroll.frame
-          Reflect.apply(scrollTo, this, typeof first === "number" ? [first, second] : [first])
+          const invoke = scrollTo.bind(this)
+          if (args.length === 2) invoke(...args)
+          else invoke(...args)
         }
         Element.prototype.scrollTo = measuredScrollTo
         Object.defineProperty(Element.prototype, "scrollTop", {
