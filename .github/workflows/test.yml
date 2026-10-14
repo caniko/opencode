@@ -54,10 +54,13 @@ jobs:
           bun -e 'const result = await Bun.file("affected.json").json(); console.log(`app=${result.packages.count > 0}`)' >> "$GITHUB_OUTPUT"
 
   unit:
-    name: unit (${{ matrix.settings.name }})
+    name: unit (${{ matrix.group == 'all' && matrix.settings.name || format('{0}, {1}', matrix.settings.name, matrix.group) }})
     strategy:
       fail-fast: false
       matrix:
+        # Serial full-suite Windows execution exceeds one step's budget.
+        # Distribute the suites while retaining every assertion and the 20-minute limit.
+        group: ${{ fromJSON(github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]') }}
         settings:
           - name: linux
             host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
@@ -105,11 +108,11 @@ jobs:
         run: rg --version
 
       - name: Test Effect simplification rules
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         run: bun run test:effect-simplification-rules
 
       - name: Check Effect simplifications
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         run: bun run lint:effect-simplifications
 
       - name: Configure git identity
@@ -131,24 +134,31 @@ jobs:
         run: |
           # Core spawns shells and CLI election tests spawn ten service contenders.
           # Keep fork package execution serial so their lifecycle deadlines measure the service.
+          filters=()
+          case "$OPENCODE_TEST_GROUP" in
+            core) filters=(--filter=@opencode/core) ;;
+            cli) filters=(--filter=@opencode/cli) ;;
+            remaining) filters=(--filter='!@opencode/core' --filter='!@opencode/cli') ;;
+          esac
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            GITHUB_ACTIONS=false bun turbo test --concurrency="$OPENCODE_TEST_CONCURRENCY"
+            GITHUB_ACTIONS=false bun turbo test "${filters[@]}" --concurrency="$OPENCODE_TEST_CONCURRENCY"
             exit 0
           fi
-          GITHUB_ACTIONS=false bun turbo test --affected --concurrency="$OPENCODE_TEST_CONCURRENCY"
+          GITHUB_ACTIONS=false bun turbo test --affected "${filters[@]}" --concurrency="$OPENCODE_TEST_CONCURRENCY"
         env:
           OPENCODE_TEST_CONCURRENCY: ${{ github.repository == 'caniko/opencode' && '1' || '3' }}
+          OPENCODE_TEST_GROUP: ${{ matrix.group }}
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}
 
       - name: Verify published codemode package
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         working-directory: packages/codemode
         run: bun run script/publish.ts --dry-run
 
       - name: Verify packed workerd SDK
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         timeout-minutes: 15
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -161,7 +171,7 @@ jobs:
           TURBO_SCM_HEAD: ${{ github.sha }}
 
       - name: Verify compiled service lifecycle
-        if: always()
+        if: always() && (matrix.group == 'all' || matrix.group == 'remaining')
         timeout-minutes: 10
         working-directory: packages/cli
         env:
@@ -171,13 +181,13 @@ jobs:
           bun run script/service-smoke.ts
 
       - name: Setup Node build runtime
-        if: always()
+        if: always() && (matrix.group == 'all' || matrix.group == 'remaining')
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "26.4.0"
 
       - name: Verify Node build
-        if: always()
+        if: always() && (matrix.group == 'all' || matrix.group == 'remaining')
         timeout-minutes: 15
         working-directory: packages/cli
         env:
@@ -187,12 +197,12 @@ jobs:
           bun run script/service-smoke.ts --node
 
       - name: Check generated client
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         working-directory: packages/client
         run: bun run check:generated
 
       - name: Check generated documentation
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
         working-directory: services/www
         run: bun run check:generated
 

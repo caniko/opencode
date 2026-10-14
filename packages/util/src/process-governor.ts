@@ -1,7 +1,7 @@
 export * as ProcessGovernor from "./process-governor.js"
 
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { accessSync, constants, existsSync, statSync } from "node:fs"
 import { link, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -768,14 +768,26 @@ export function handoff(
   const target = shell ? [typeof shell === "string" ? shell : "/bin/sh", "-c", command] : [command, ...args]
   // Admission bootstrap uses host utilities, not the tool's potentially empty PATH.
   const helpers = ["cat", "ln", "rm", "mv", "sleep"].map((name) => {
-    const file = Bun.which(name)
+    const file = executable(name)
     if (!file) throw new Error("Process governor requires host core utilities")
     return `'${file.replaceAll("'", "'\\''")}'`
   })
   return {
-    command: Bun.which("sh") ?? "/bin/sh",
+    command: executable("sh") ?? "/bin/sh",
     args: ["-c", HANDOFF(helpers), "opencode-governor", lease.slot, lease.token, ...target],
     shell: false,
+  }
+}
+
+function executable(name: string) {
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    const file = path.resolve(directory, name)
+    try {
+      accessSync(file, constants.X_OK)
+      if (statSync(file).isFile()) return file
+    } catch {
+      // Missing or non-executable PATH entries are ordinary lookup misses.
+    }
   }
 }
 
