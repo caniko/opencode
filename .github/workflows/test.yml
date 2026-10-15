@@ -21,6 +21,7 @@ on:
           - cli-startup
           - npm-git
           - oauth-callback
+          - node-service
           - composer
           - pty
           - app-config
@@ -51,7 +52,7 @@ env:
 jobs:
   affected:
     name: affected packages
-    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "oauth-callback", "pty", "app-config", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite)
+    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "oauth-callback", "node-service", "pty", "app-config", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite)
     # Keep upstream's pool while allowing the maintained fork to qualify on GitHub.
     runs-on: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     outputs:
@@ -90,7 +91,7 @@ jobs:
       matrix:
         # Serial full-suite Windows execution exceeds one step's budget.
         # Distribute the suites while retaining every assertion and the 20-minute limit.
-        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || inputs.suite == 'oauth-callback' && '["server"]' || contains(fromJSON('["npm-git", "pty", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite) && '["core"]' || inputs.suite == 'app-config' && '["app"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
+        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || inputs.suite == 'oauth-callback' && '["server"]' || inputs.suite == 'node-service' && '["node-build"]' || contains(fromJSON('["npm-git", "pty", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite) && '["core"]' || inputs.suite == 'app-config' && '["app"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
         settings:
           - name: linux
             host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
@@ -162,6 +163,10 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
+          if [ "$DIAGNOSTIC_SUITE" = node-service ]; then
+            echo 'Focused Node build and service smoke run below; no unit-test acceptance.'
+            exit 0
+          fi
           if [ "$OPENCODE_TEST_GROUP" = core ]; then
             directory="$GITHUB_WORKSPACE/test-results/npm-runtime"
             mkdir -p "$directory"
@@ -336,20 +341,42 @@ jobs:
           bun run script/service-smoke.ts
 
       - name: Setup Node build runtime
-        if: always() && (matrix.group == 'all' || matrix.group == 'remaining')
+        if: always() && (matrix.group == 'all' || matrix.group == 'remaining' || matrix.group == 'node-build')
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "26.4.0"
 
       - name: Verify Node build
-        if: always() && (matrix.group == 'all' || matrix.group == 'remaining')
+        if: always() && (matrix.group == 'all' || matrix.group == 'remaining' || matrix.group == 'node-build')
         timeout-minutes: 15
         working-directory: packages/cli
         env:
           NODE_OPTIONS: ${{ runner.os == 'Windows' && '--max-old-space-size=4096' || '' }}
         run: |
           bun run script/build-node.ts --single --skip-install --outdir=dist/node
+          if [ "${{ inputs.suite }}" = node-service ]; then
+            directory="$GITHUB_WORKSPACE/test-results/node-service"
+            mkdir -p "$directory"
+            status=0
+            for invocation in 1 2 3; do
+              result=0
+              OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=DEBUG bun run script/service-smoke.ts --node \
+                2>&1 | tee "$directory/invocation-$invocation.log" || result=$?
+              printf '%s\n' "$result" > "$directory/invocation-$invocation.status"
+              if [ "$result" -ne 0 ]; then status=1; fi
+            done
+            exit "$status"
+          fi
           bun run script/service-smoke.ts --node
+
+      - name: Upload Node service evidence
+        if: always() && inputs.suite == 'node-service'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-service-${{ matrix.settings.name }}
+          path: test-results/node-service
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Check generated client
         if: runner.os == 'Linux' && (matrix.group == 'all' || matrix.group == 'remaining')
