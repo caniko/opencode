@@ -18,6 +18,7 @@ on:
           - timeline-benchmark
           - cli-startup
           - npm-git
+          - oauth-callback
           - composer
           - pty
           - app-config
@@ -48,7 +49,7 @@ env:
 jobs:
   affected:
     name: affected packages
-    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "pty", "app-config", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite)
+    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "oauth-callback", "pty", "app-config", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite)
     # Keep upstream's pool while allowing the maintained fork to qualify on GitHub.
     runs-on: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     outputs:
@@ -87,7 +88,7 @@ jobs:
       matrix:
         # Serial full-suite Windows execution exceeds one step's budget.
         # Distribute the suites while retaining every assertion and the 20-minute limit.
-        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || contains(fromJSON('["npm-git", "pty", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite) && '["core"]' || inputs.suite == 'app-config' && '["app"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
+        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || inputs.suite == 'oauth-callback' && '["server"]' || contains(fromJSON('["npm-git", "pty", "vcs", "shell-powershell", "runtime-boundaries"]'), inputs.suite) && '["core"]' || inputs.suite == 'app-config' && '["app"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
         settings:
           - name: linux
             host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
@@ -179,6 +180,20 @@ jobs:
             GIT_TRACE=1 GIT_TRACE_PERFORMANCE=1 GITHUB_ACTIONS=false bun run --cwd packages/core test ./test/npm.test.ts
             exit $?
           fi
+          if [ "$DIAGNOSTIC_SUITE" = oauth-callback ]; then
+            directory="$GITHUB_WORKSPACE/test-results/oauth-callback"
+            mkdir -p "$directory"
+            status=0
+            for invocation in 1 2 3; do
+              result=0
+              GITHUB_ACTIONS=false OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=DEBUG \
+                bun run --cwd packages/server test ./test/fetch.test.ts --test-name-pattern 'OpenAI OAuth' \
+                2>&1 | tee "$directory/invocation-$invocation.log" || result=$?
+              printf '%s\n' "$result" > "$directory/invocation-$invocation.status"
+              if [ "$result" -ne 0 ]; then status=1; fi
+            done
+            exit "$status"
+          fi
           if [ "$DIAGNOSTIC_SUITE" = pty ]; then
             GITHUB_ACTIONS=false bun run --cwd packages/core test ./test/pty/pty-windows.test.ts
             exit $?
@@ -245,6 +260,15 @@ jobs:
         with:
           name: core-runtime-${{ matrix.settings.name }}
           path: test-results/npm-runtime
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload OAuth callback evidence
+        if: always() && inputs.suite == 'oauth-callback'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oauth-callback-${{ matrix.settings.name }}
+          path: test-results/oauth-callback
           if-no-files-found: error
           retention-days: 14
 
