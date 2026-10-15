@@ -152,6 +152,12 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
+          if [ "$OPENCODE_TEST_GROUP" = core ]; then
+            directory="$GITHUB_WORKSPACE/test-results/npm-runtime"
+            mkdir -p "$directory"
+            if [ "$RUNNER_OS" = Windows ]; then directory="$(cygpath -m "$directory")"; fi
+            export GIT_TRACE2_EVENT="$directory/git-trace.jsonl"
+          fi
           if [ "$DIAGNOSTIC_SUITE" = cli-startup ]; then
             export OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=DEBUG
             GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts
@@ -210,6 +216,25 @@ jobs:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}
+
+      - name: Profile npm runtime imports
+        if: always() && inputs.suite == 'npm-git'
+        timeout-minutes: 2
+        working-directory: packages/util
+        run: |
+          directory="$GITHUB_WORKSPACE/test-results/npm-runtime"
+          if [ "$RUNNER_OS" = Windows ]; then directory="$(cygpath -m "$directory")"; fi
+          bun --cpu-prof --cpu-prof-md --cpu-prof-name=npm-import --cpu-prof-dir="$directory" \
+            -e 'const started = performance.now(); await import("@npmcli/arborist"); console.log(JSON.stringify({phase: "arborist-import", elapsed: performance.now() - started}))'
+
+      - name: Upload Core npm runtime evidence
+        if: always() && matrix.group == 'core'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-runtime-${{ matrix.settings.name }}
+          path: test-results/npm-runtime
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Profile headless startup imports
         if: always() && inputs.suite == 'cli-startup'

@@ -47,6 +47,7 @@
     },
     "@opencode/core#test": {
       "dependsOn": ["^build"],
+      "passThroughEnv": ["GIT_TRACE2_EVENT"],
       "outputs": []
     },
     "@opencode/function#test": {
