@@ -165,24 +165,8 @@ export function createTimelineVirtualizer(input: Input) {
   let reportOffset: ((offset: number, scrolling: boolean) => void) | undefined
   let reportRect: ((rect: { width: number; height: number }) => void) | undefined
   let batchingColdSizes = false
-  let reportedCount = rows().length
 
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
-    onChange: (instance) => {
-      if (reportedCount === instance.options.count) return
-      console.debug(
-        "timeline-page",
-        JSON.stringify({
-          before: reportedCount,
-          count: instance.options.count,
-          offset: instance.scrollOffset,
-          domOffset: listRoot()?.scrollTop,
-          range: instance.range,
-          first: instance.options.getItemKey(0),
-        }),
-      )
-      reportedCount = instance.options.count
-    },
     get count() {
       return rows().length
     },
@@ -248,23 +232,9 @@ export function createTimelineVirtualizer(input: Input) {
     scrollToFn: (offset, options, instance) => {
       if (!active()) return
       if (batchingColdSizes && input.pinned()) return
-      const before = listRoot()?.scrollTop
       setRendering("scrollAdjustment", 0)
       if (virtualContent) virtualContent.style.height = `${instance.getTotalSize()}px`
       elementScroll(offset, options, instance)
-      console.debug(
-        "timeline-scroll",
-        JSON.stringify({
-          count: instance.options.count,
-          first: instance.options.getItemKey(0),
-          requested: offset,
-          adjustments: options.adjustments,
-          before,
-          offset: instance.scrollOffset,
-          domOffset: listRoot()?.scrollTop,
-          total: instance.getTotalSize(),
-        }),
-      )
     },
     get getItemKey() {
       return getItemKey()
@@ -315,24 +285,7 @@ export function createTimelineVirtualizer(input: Input) {
         sizes.forEach(([index, value]) => {
           const row = rows()[index]
           if (!row || TimelineRow.key(row) !== value.key) return
-          const before = virtualizer.scrollOffset
-          const previousSize = virtualizer.itemSizeCache.get(value.key) ?? fallbackItemSize
           resizeItem(index, value.size)
-          if (Math.abs(value.size - previousSize) > 500)
-            console.debug(
-              "timeline-resize",
-              JSON.stringify({
-                key: value.key,
-                index,
-                added: addedKeys.has(value.key),
-                previousSize,
-                size: value.size,
-                before,
-                offset: virtualizer.scrollOffset,
-                domOffset: listRoot()?.scrollTop,
-                range: virtualizer.range,
-              }),
-            )
           // TanStack recalculates its range after each resize. Advance the
           // logical fold before deciding whether the next row needs anchoring.
           if (!touchAdjustment) return

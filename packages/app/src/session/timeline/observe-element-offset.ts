@@ -9,23 +9,16 @@ export function observeElementOffsetReconnectAware<TScrollElement extends Elemen
   const deliver = (offset: number, isScrolling: boolean) => {
     if (!active) return
     const element = instance.scrollElement
-    const domOffset = element
-      ? instance.options.horizontal
-        ? element.scrollLeft * (instance.options.isRtl ? -1 : 1)
-        : element.scrollTop
-      : undefined
-    if (domOffset !== undefined && Math.abs(offset - domOffset) > 1)
-      console.debug(
-        "timeline-observe",
-        JSON.stringify({
-          received: offset,
-          scrolling: isScrolling,
-          offset: instance.scrollOffset,
-          domOffset,
-          stack: new Error().stack,
-        }),
-      )
-    callback(offset, isScrolling)
+    // The delegated scroll-end timer retains the last event's offset. A prepend
+    // or resize can move the viewport before it fires, so read its settled position.
+    callback(
+      !isScrolling && element
+        ? instance.options.horizontal
+          ? element.scrollLeft * (instance.options.isRtl ? -1 : 1)
+          : element.scrollTop
+        : offset,
+      isScrolling,
+    )
   }
   const cleanupOffset = observeElementOffset(instance, deliver)
   const element = instance.scrollElement
