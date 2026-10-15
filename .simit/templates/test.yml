@@ -160,7 +160,7 @@ jobs:
           fi
           if [ "$DIAGNOSTIC_SUITE" = cli-startup ]; then
             export OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=DEBUG
-            GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts
+            GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts ./test/acp/config-options.subprocess.test.ts
             exit $?
           fi
           if [ "$DIAGNOSTIC_SUITE" = npm-git ]; then
