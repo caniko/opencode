@@ -22,6 +22,21 @@ const writePackage = (dir: string, pkg: Record<string, unknown>) =>
 const npmLayer = (cache: string) =>
   AppNodeBuilder.build(Npm.node, [Global.node.replace(Global.layerWith({ cache, state: path.join(cache, "state") }))])
 
+function traceNpm(test: string) {
+  const started = performance.now()
+  return (phase: string) =>
+    console.error(
+      "npm-reify-phase",
+      JSON.stringify({
+        test,
+        phase,
+        elapsed: performance.now() - started,
+        cpu: process.cpuUsage(),
+        rss: process.memoryUsage.rss(),
+      }),
+    )
+}
+
 async function createGitFixture(directory: string) {
   const repository = path.join(directory, "repository")
   await fs.mkdir(path.join(repository, "dependency"), { recursive: true })
@@ -193,17 +208,7 @@ describe("Npm.add", () => {
   })
 
   test("reifies when package cache directory exists without the package installed", async () => {
-    const started = performance.now()
-    const report = (phase: string) =>
-      console.error(
-        "npm-reify-phase",
-        JSON.stringify({
-          phase,
-          elapsed: performance.now() - started,
-          cpu: process.cpuUsage(),
-          rss: process.memoryUsage.rss(),
-        }),
-      )
+    const report = traceNpm("local-file")
     report("start")
     try {
       await using tmp = await tmpdir()
@@ -244,8 +249,11 @@ describe("Npm.add", () => {
   })
 
   test.each(["unnamed", "named"])("installs and locates %s Git packages with dependencies", async (kind) => {
+    const report = traceNpm(`git-${kind}`)
+    report("start")
     await using tmp = await tmpdir()
     const fixture = await createGitFixture(tmp.path)
+    report("fixture-ready")
     const spec =
       kind === "unnamed"
         ? `git+file://${fixture.repository}#${fixture.commit}`
@@ -253,11 +261,14 @@ describe("Npm.add", () => {
 
     const entries = await Effect.gen(function* () {
       const npm = yield* Npm.Service
-      return {
-        added: yield* npm.add(spec),
-        cached: yield* npm.add(spec),
-        resolved: yield* npm.resolve(spec),
-      }
+      report("service-ready")
+      const added = yield* npm.add(spec)
+      report("added")
+      const cached = yield* npm.add(spec)
+      report("cached")
+      const resolved = yield* npm.resolve(spec)
+      report("resolved")
+      return { added, cached, resolved }
     }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
 
     expect(entries.added.directory).toEndWith(path.join("node_modules", entries.added.name))
@@ -272,12 +283,20 @@ describe("Npm.add", () => {
   })
 
   test.each(["commit", "branch"])("installs a Git package from an npm ::path: subdirectory at a %s", async (ref) => {
+    const report = traceNpm(`git-subdirectory-${ref}`)
+    report("start")
     await using tmp = await tmpdir()
     const fixture = await createGitFixture(tmp.path)
+    report("fixture-ready")
     const spec = `git+file://${fixture.repository}#${ref === "commit" ? fixture.commit : "fixture-branch"}::path:packages/subdirectory-plugin`
     const result = await Effect.gen(function* () {
       const npm = yield* Npm.Service
-      return { added: yield* npm.add(spec), outdated: yield* npm.check(spec) }
+      report("service-ready")
+      const added = yield* npm.add(spec)
+      report("added")
+      const outdated = yield* npm.check(spec)
+      report("checked")
+      return { added, outdated }
     }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
 
     expect(result.added.directory).toEndWith(path.join("node_modules", "fixture-subdirectory-plugin"))

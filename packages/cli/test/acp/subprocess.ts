@@ -194,13 +194,24 @@ function verifierConfig(llmUrl: string, skills?: string) {
 }
 
 function spawnAcp(input: { readonly env: Record<string, string | undefined> }): AcpProcess {
-  const child = Bun.spawn([process.execPath, "run", "src/index.ts", "acp"], {
-    cwd: path.join(import.meta.dir, "../.."),
-    env: input.env,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "run",
+      ...(input.env.OPENCODE_PRINT_LOGS === "1"
+        ? ["--preload", path.join(import.meta.dir, "../fixture/startup-trace.ts")]
+        : []),
+      "src/index.ts",
+      "acp",
+    ],
+    {
+      cwd: path.join(import.meta.dir, "../.."),
+      env: input.env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   const errorDecoder = new TextDecoder()
