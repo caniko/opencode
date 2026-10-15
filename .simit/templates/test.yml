@@ -364,7 +364,7 @@ jobs:
         if: env.E2E_ENABLED == 'true'
         run: |
           if [ "$DIAGNOSTIC_SUITE" = timeline-history ]; then
-            bun run --cwd packages/app test:e2e:built e2e/regression/timeline-history.spec.ts --trace on
+            bun run --cwd packages/app test:e2e:built e2e/regression/timeline-history.spec.ts --trace on --repeat-each=3 --retries=0 --workers=1
           elif [ "$DIAGNOSTIC_SUITE" = timeline-benchmark ]; then
             directory="$GITHUB_WORKSPACE/test-results/timeline-benchmark"
             mkdir -p "$directory"

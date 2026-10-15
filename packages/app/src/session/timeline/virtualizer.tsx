@@ -248,9 +248,23 @@ export function createTimelineVirtualizer(input: Input) {
     scrollToFn: (offset, options, instance) => {
       if (!active()) return
       if (batchingColdSizes && input.pinned()) return
+      const before = listRoot()?.scrollTop
       setRendering("scrollAdjustment", 0)
       if (virtualContent) virtualContent.style.height = `${instance.getTotalSize()}px`
       elementScroll(offset, options, instance)
+      console.debug(
+        "timeline-scroll",
+        JSON.stringify({
+          count: instance.options.count,
+          first: instance.options.getItemKey(0),
+          requested: offset,
+          adjustments: options.adjustments,
+          before,
+          offset: instance.scrollOffset,
+          domOffset: listRoot()?.scrollTop,
+          total: instance.getTotalSize(),
+        }),
+      )
     },
     get getItemKey() {
       return getItemKey()
