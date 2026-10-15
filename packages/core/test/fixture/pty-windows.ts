@@ -16,11 +16,14 @@ const pty = spawn(
   { name: "xterm-256color", cols: 160, rows: 24, env: { ...process.env, TERM: "xterm-256color" } },
 )
 const output = { text: "", cursor: 0 }
+const started = performance.now()
+const deliveries: { elapsed: number; text: string }[] = []
 const listeners = new Set<() => void>()
 const exited = Promise.withResolvers<number>()
 pty.onExit((event) => exited.resolve(event.exitCode))
 pty.onData((text) => {
   output.text += text
+  deliveries.push({ elapsed: performance.now() - started, text })
   listeners.forEach((check) => check())
 })
 
@@ -53,7 +56,11 @@ function waitFor(text: string) {
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       listeners.delete(check)
-      reject(new Error(`Timed out waiting for ${JSON.stringify(text)}: ${output.text}`))
+      reject(
+        new Error(
+          `Timed out waiting for ${JSON.stringify(text)}: ${output.text}\n${JSON.stringify({ elapsed: performance.now() - started, deliveries })}`,
+        ),
+      )
     }, 5_000)
     const check = () => {
       const index = output.text.indexOf(text, output.cursor)

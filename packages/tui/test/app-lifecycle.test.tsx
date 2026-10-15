@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { EmbeddedTerminalRenderable } from "@opentui/core"
+import { CodeRenderable, EmbeddedTerminalRenderable, MarkdownRenderable, type Renderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect, FileSystem } from "effect"
 import { Global } from "@opencode/util/global"
@@ -622,14 +622,41 @@ test.each([80, 120])("completes custom Markdown and ordinary fences in a session
       return undefined
     },
   })
-  const streaming = await setup.waitForFrame(
-    (frame) =>
-      frame.includes("initial") &&
-      frame.includes("DiagramStart") &&
-      frame.includes("DiagramEnd") &&
-      frame.includes("x\u00b2") &&
-      frame.includes("y\u00b2"),
-  )
+  function diagnose(error: unknown): never {
+    function snapshot(node: Renderable): unknown {
+      return {
+        type: node.constructor.name,
+        id: node.id,
+        width: node.width,
+        height: node.height,
+        ...(node instanceof CodeRenderable
+          ? {
+              content: node.content,
+              filetype: node.filetype,
+              highlighting: node.isHighlighting,
+              drawUnstyledText: node.drawUnstyledText,
+              streaming: node.streaming,
+            }
+          : {}),
+        ...(node instanceof MarkdownRenderable
+          ? { content: node.content, streaming: node.streaming, tokens: node._blockStates.map((block) => block.token) }
+          : {}),
+        children: node.getChildren().map(snapshot),
+      }
+    }
+    console.error("markdown-render-failure", JSON.stringify(snapshot(setup.renderer.root)))
+    throw error
+  }
+  const streaming = await setup
+    .waitForFrame(
+      (frame) =>
+        frame.includes("initial") &&
+        frame.includes("DiagramStart") &&
+        frame.includes("DiagramEnd") &&
+        frame.includes("x\u00b2") &&
+        frame.includes("y\u00b2"),
+    )
+    .catch(diagnose)
   expect(streaming).toContain("Compaction")
   expect(streaming).not.toContain("initial final")
   expect(streaming).not.toContain("MARKDOWN_END")
@@ -660,9 +687,9 @@ test.each([80, 120])("completes custom Markdown and ordinary fences in a session
       tokens: session.tokens,
     },
   })
-  const frame = await setup.waitForFrame(
-    (frame) => frame.includes("MARKDOWN_END") && frame.includes("initial final") && frame.includes("2ms"),
-  )
+  const frame = await setup
+    .waitForFrame((frame) => frame.includes("MARKDOWN_END") && frame.includes("initial final") && frame.includes("2ms"))
+    .catch(diagnose)
   expect(frame).toContain("DiagramStart")
   expect(frame).toContain("DiagramEnd")
   expect(frame).toContain("x\u00b2")
