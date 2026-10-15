@@ -26,11 +26,18 @@ on:
           - vcs
           - shell-powershell
           - runtime-boundaries
+      startup_preload:
+        description: Child preload comparison for cli-startup diagnostics only
+        type: choice
+        default: configured
+        options:
+          - configured
+          - none
 
 concurrency:
   # Keep every run on dev so cancelled checks do not pollute the default branch
   # commit history. PRs and other branches still share a group and cancel stale runs.
-  group: ${{ case(github.ref == 'refs/heads/dev', format('{0}-{1}', github.workflow, github.run_id), format('{0}-{1}-{2}', github.workflow, github.event.pull_request.number || github.ref, inputs.suite || 'all')) }}
+  group: ${{ case(github.ref == 'refs/heads/dev', format('{0}-{1}', github.workflow, github.run_id), format('{0}-{1}-{2}-{3}', github.workflow, github.event.pull_request.number || github.ref, inputs.suite || 'all', inputs.startup_preload || 'configured')) }}
   cancel-in-progress: true
 
 permissions:
@@ -162,6 +169,7 @@ jobs:
           fi
           if [ "$DIAGNOSTIC_SUITE" = cli-startup ]; then
             export OPENCODE_TEST_STARTUP_TRACE=1
+            echo "Lifecycle child preload: $OPENCODE_TEST_STARTUP_PRELOAD"
             GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts ./test/acp/config-options.subprocess.test.ts
             exit $?
           fi
@@ -214,6 +222,7 @@ jobs:
           OPENCODE_TEST_CONCURRENCY: ${{ github.repository == 'caniko/opencode' && '1' || '3' }}
           OPENCODE_TEST_GROUP: ${{ matrix.group }}
           OPENCODE_TEST_STARTUP_TRACE: ${{ matrix.group == 'cli' && '1' || '' }}
+          OPENCODE_TEST_STARTUP_PRELOAD: ${{ inputs.suite == 'cli-startup' && inputs.startup_preload || 'configured' }}
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}

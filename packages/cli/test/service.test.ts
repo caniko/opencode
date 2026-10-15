@@ -10,6 +10,7 @@ import path from "node:path"
 import { ServiceConfig } from "../src/services/service-config"
 import { ServiceRegistration } from "../src/services/service-registration"
 import { isolatedEnv } from "./fixture/environment"
+import { startupArgs } from "./fixture/startup-args"
 
 test("managed service ports are stable per installation channel", () => {
   expect(ServiceConfig.defaultPort("latest")).toBe(0xc0de)
@@ -655,15 +656,7 @@ async function startManagedService(prefix: string, failBoot = false) {
   if (failBoot) await fs.mkdir(path.join(root, "database"))
   await fs.writeFile(path.join(root, "config", "opencode", "service-local.json"), JSON.stringify({ port }))
   const owner = Bun.spawn(
-    [
-      process.execPath,
-      ...(process.env.OPENCODE_TEST_STARTUP_TRACE === "1"
-        ? ["--preload", path.join(import.meta.dir, "fixture/startup-trace.ts")]
-        : []),
-      path.join(import.meta.dir, "../src/index.ts"),
-      "serve",
-      "--service",
-    ],
+    [process.execPath, ...startupArgs(), path.join(import.meta.dir, "../src/index.ts"), "serve", "--service"],
     {
       env: failBoot ? { ...serviceEnv(root), OPENCODE_DB: path.join(root, "database") } : serviceEnv(root),
       stderr: "pipe",

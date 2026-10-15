@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { isolatedEnv } from "../fixture/environment"
+import { startupArgs } from "../fixture/startup-args"
 
 type JsonRpcRequest = {
   readonly jsonrpc: "2.0"
@@ -194,24 +195,13 @@ function verifierConfig(llmUrl: string, skills?: string) {
 }
 
 function spawnAcp(input: { readonly env: Record<string, string | undefined> }): AcpProcess {
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      "run",
-      ...(input.env.OPENCODE_TEST_STARTUP_TRACE === "1"
-        ? ["--preload", path.join(import.meta.dir, "../fixture/startup-trace.ts")]
-        : []),
-      "src/index.ts",
-      "acp",
-    ],
-    {
-      cwd: path.join(import.meta.dir, "../.."),
-      env: input.env,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  )
+  const child = Bun.spawn([process.execPath, "run", ...startupArgs(input.env), "src/index.ts", "acp"], {
+    cwd: path.join(import.meta.dir, "../.."),
+    env: input.env,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   const errorDecoder = new TextDecoder()
@@ -285,7 +275,13 @@ function spawnAcp(input: { readonly env: Record<string, string | undefined> }): 
         timer: setTimeout(() => {
           const index = waiters.indexOf(waiter)
           if (index !== -1) waiters.splice(index, 1)
-          reject(new Error(`Timed out waiting for ${description}${stderr ? `: ${stderr}` : ""}`))
+          const state = JSON.stringify({
+            pid: child.pid,
+            exitCode: child.exitCode,
+            startupTrace: input.env.OPENCODE_TEST_STARTUP_TRACE,
+            startupPreload: input.env.OPENCODE_TEST_STARTUP_PRELOAD ?? "configured",
+          })
+          reject(new Error(`Timed out waiting for ${description}: ${state}${stderr ? `\n${stderr}` : ""}`))
         }, timeoutMs),
       }
       waiters.push(waiter)

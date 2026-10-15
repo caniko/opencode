@@ -24,4 +24,9 @@ report("preload")
 setInterval(() => report("heartbeat"), 500).unref()
 process.on("exit", () => report("exit"))
 
-export {}
+if (process.env.OPENCODE_TEST_STARTUP_PRELOAD !== "none") {
+  report("solid-preload-start")
+  const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
+  ensureSolidTransformPlugin()
+  report("solid-preload-ready")
+}
