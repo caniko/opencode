@@ -8,6 +8,23 @@ export function observeElementOffsetReconnectAware<TScrollElement extends Elemen
   let active = true
   const deliver = (offset: number, isScrolling: boolean) => {
     if (!active) return
+    const element = instance.scrollElement
+    const domOffset = element
+      ? instance.options.horizontal
+        ? element.scrollLeft * (instance.options.isRtl ? -1 : 1)
+        : element.scrollTop
+      : undefined
+    if (domOffset !== undefined && Math.abs(offset - domOffset) > 1)
+      console.debug(
+        "timeline-observe",
+        JSON.stringify({
+          received: offset,
+          scrolling: isScrolling,
+          offset: instance.scrollOffset,
+          domOffset,
+          stack: new Error().stack,
+        }),
+      )
     callback(offset, isScrolling)
   }
   const cleanupOffset = observeElementOffset(instance, deliver)
