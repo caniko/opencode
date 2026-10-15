@@ -145,12 +145,16 @@ function bindWithRetry(server: Server, port: number, attempts: number): Effect.E
 
 function bind(server: Server, port: number) {
   return Effect.callback<void, Error>((resume) => {
-    const onError = (error: Error) => resume(Effect.fail(error))
-    server.once("error", onError)
-    server.listen(port, "localhost", () => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening)
+      resume(Effect.fail(error))
+    }
+    const onListening = () => {
       server.off("error", onError)
       resume(Effect.void)
-    })
+    }
+    server.once("error", onError)
+    server.listen(port, "localhost", onListening)
   })
 }
 
