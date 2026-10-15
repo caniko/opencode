@@ -21,6 +21,7 @@ on:
           - cli-startup
           - npm-git
           - shell-contracts
+          - core-context
           - composer
 
 concurrency:
@@ -39,7 +40,7 @@ env:
 jobs:
   affected:
     name: affected packages
-    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "shell-contracts"]'), inputs.suite)
+    if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["cli-startup", "npm-git", "shell-contracts", "core-context"]'), inputs.suite)
     # Keep upstream's pool while allowing the maintained fork to qualify on GitHub.
     runs-on: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     outputs:
@@ -78,7 +79,7 @@ jobs:
       matrix:
         # Serial full-suite Windows execution exceeds one step's budget.
         # Distribute the suites while retaining every assertion and the 20-minute limit.
-        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || contains(fromJSON('["npm-git", "shell-contracts"]'), inputs.suite) && '["core"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
+        group: ${{ fromJSON(inputs.suite == 'cli-startup' && '["cli"]' || contains(fromJSON('["npm-git", "shell-contracts", "core-context"]'), inputs.suite) && '["core"]' || (github.repository == 'caniko/opencode' && '["core", "cli", "remaining"]' || '["all"]')) }}
         settings:
           - name: linux
             host: ${{ github.repository == 'caniko/opencode' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
@@ -150,6 +151,17 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
+          if [ "$DIAGNOSTIC_SUITE" = core-context ]; then
+            directory="$GITHUB_WORKSPACE/test-results/core-context"
+            mkdir -p "$directory"
+            result=0
+            GITHUB_ACTIONS=false OPENCODE_TEST_JUNIT="$directory/core.xml" \
+              bun turbo test --filter=@opencode/core --concurrency=1 --force \
+              2>&1 | tee "$directory/core.log" || result=$?
+            if [ "$result" -eq 0 ]; then test -s "$directory/core.xml" || result=1; fi
+            printf '%s\n' "$result" > "$directory/core.status"
+            exit "$result"
+          fi
           if [ "$DIAGNOSTIC_SUITE" = shell-contracts ]; then
             directory="$GITHUB_WORKSPACE/test-results/shell-contracts"
             mkdir -p "$directory"
@@ -193,6 +205,15 @@ jobs:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}
+
+      - name: Upload full Core context evidence
+        if: always() && inputs.suite == 'core-context'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-context-${{ matrix.settings.name }}
+          path: test-results/core-context
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload shell contract evidence
         if: always() && inputs.suite == 'shell-contracts'

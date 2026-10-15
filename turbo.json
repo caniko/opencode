@@ -47,6 +47,7 @@
     },
     "@opencode/core#test": {
       "dependsOn": ["^build"],
+      "passThroughEnv": ["OPENCODE_TEST_JUNIT"],
       "outputs": []
     },
     "@opencode/function#test": {
