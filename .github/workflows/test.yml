@@ -169,6 +169,10 @@ jobs:
           fi
           if [ "$DIAGNOSTIC_SUITE" = cli-startup ]; then
             export OPENCODE_TEST_STARTUP_TRACE=1
+            directory="$GITHUB_WORKSPACE/test-results/startup/children"
+            mkdir -p "$directory"
+            if [ "$RUNNER_OS" = Windows ]; then directory="$(cygpath -m "$directory")"; fi
+            export OPENCODE_TEST_STARTUP_PROFILE_DIR="$directory"
             echo "Lifecycle child preload: $OPENCODE_TEST_STARTUP_PRELOAD"
             GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts ./test/acp/config-options.subprocess.test.ts
             exit $?
