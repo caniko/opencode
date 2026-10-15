@@ -667,7 +667,7 @@ async function startManagedService(prefix: string, failBoot = false) {
     await fs.rm(root, { recursive: true, force: true })
     throw new Error(diagnostic || "Managed service did not publish registration", { cause })
   })
-  return { root, port, registration, owner, info }
+  return { root, port, registration, owner, info, output }
 }
 
 function serviceOutput(child: Bun.Subprocess<"ignore", "pipe", "pipe">) {
@@ -678,8 +678,10 @@ function serviceOutput(child: Bun.Subprocess<"ignore", "pipe", "pipe">) {
 }
 
 async function stopManagedService(service: Awaited<ReturnType<typeof startManagedService>>) {
+  const running = service.owner.exitCode === null
   service.owner.kill("SIGTERM")
   await service.owner.exited
+  if (running) console.error("Managed service remained alive before cleanup:\n" + (await service.output))
   await fs.rm(service.root, { recursive: true, force: true })
 }
 

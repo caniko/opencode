@@ -66,6 +66,11 @@ test.describe("timeline history", () => {
     const errors = trackPageErrors(page)
     const held: (() => void)[] = []
     const loads = { started: 0, ended: 0 }
+    const measurements: { time: number; message: string }[] = []
+    page.on("console", (message) => {
+      if (message.type() === "debug" && message.text().startsWith("timeline-"))
+        measurements.push({ time: Date.now(), message: message.text() })
+    })
     await page.setViewportSize({ width: 1280, height: 1400 })
     await openStressTarget(page, {
       // Older pages land only between scroll steps, so a step never races the prepend.
@@ -84,13 +89,14 @@ test.describe("timeline history", () => {
     // that only mounts while a prepend or deferred measurement is settling.
     const samples: {
       phase: string
+      time: number
       started: number
       ended: number
       state: Awaited<ReturnType<typeof visibleTimeline>>
     }[] = []
     const sample = async (phase: string) => {
       const state = await visibleTimeline(page)
-      samples.push({ phase, ...loads, state })
+      samples.push({ phase, time: Date.now(), ...loads, state })
       if (samples.length > 512) samples.shift()
       return state
     }
@@ -148,6 +154,7 @@ test.describe("timeline history", () => {
               previous: state,
               current: await sample("failure"),
               samples,
+              measurements,
               loads,
               held: held.length,
               unseenParts: expectedParts.filter((id) => !seenParts.has(id)),
