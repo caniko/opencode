@@ -809,9 +809,10 @@ describe("Session.create", () => {
       const session = yield* Session.Service
       const parent = yield* session.create({ location })
 
-      expect(
-        yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "Session.ForkEmptyError", sessionID: parent.id })
+      expect(yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip)).toMatchObject({
+        _tag: "Session.ForkEmptyError",
+        sessionID: parent.id,
+      })
     }),
   )
 
@@ -1081,24 +1082,55 @@ describe("Session.create", () => {
   liveIt.live("runs a shell command and projects the started/ended shell message", () =>
     withTmp((directory) =>
       Effect.gen(function* () {
+        const started = performance.now()
+        const trace: { elapsed: number; phase: string; data?: unknown }[] = []
+        const record = (phase: string, data?: unknown) =>
+          trace.push({ elapsed: performance.now() - started, phase, data })
         const session = yield* Session.Service
-        const created = yield* session.create({
-          location: Location.Ref.make({ directory: AbsolutePath.make(directory) }),
-        })
-        yield* session.environment({ sessionID: created.id, variables: { OPENCODE_SESSION_ENV_TEST: "attached" } })
+        const bus = yield* Bus.Service
+        yield* Effect.acquireRelease(
+          bus.listen((event) =>
+            Effect.sync(() => {
+              if (
+                event.type === Shell.Event.Created.type ||
+                event.type === Shell.Event.Exited.type ||
+                event.type === SessionEvent.Shell.Started.type ||
+                event.type === SessionEvent.Shell.Ended.type
+              )
+                record(event.type, event.data)
+            }),
+          ),
+          (unsubscribe) => unsubscribe,
+        )
+        record("create")
+        return yield* Effect.gen(function* () {
+          const created = yield* session.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(directory) }),
+          })
+          record("environment")
+          yield* session.environment({ sessionID: created.id, variables: { OPENCODE_SESSION_ENV_TEST: "attached" } })
 
-        const command =
-          process.platform === "win32"
-            ? "[Console]::Out.Write($env:OPENCODE_SESSION_ENV_TEST)"
-            : 'printf %s "$OPENCODE_SESSION_ENV_TEST"'
-        yield* session.shell({ sessionID: created.id, command })
+          const command =
+            process.platform === "win32"
+              ? "[Console]::Out.Write($env:OPENCODE_SESSION_ENV_TEST)"
+              : 'printf %s "$OPENCODE_SESSION_ENV_TEST"'
+          record("shell")
+          yield* session.shell({ sessionID: created.id, command })
+          record("messages")
 
-        const messages = yield* session.messages({ sessionID: created.id, order: "asc" })
-        const shell = messages.find((message): message is SessionMessage.Shell => message.type === "shell")
-        expect(shell).toMatchObject({ type: "shell", command, status: "exited", exit: 0 })
-        expect(shell?.output?.output).toContain("attached")
-        expect(shell?.output?.truncated).toBe(false)
-        expect(shell?.time.completed).toBeDefined()
+          const messages = yield* session.messages({ sessionID: created.id, order: "asc" })
+          const shell = messages.find((message): message is SessionMessage.Shell => message.type === "shell")
+          expect(shell).toMatchObject({ type: "shell", command, status: "exited", exit: 0 })
+          expect(shell?.output?.output).toContain("attached")
+          expect(shell?.output?.truncated).toBe(false)
+          expect(shell?.time.completed).toBeDefined()
+        }).pipe(
+          Effect.tapCause(() =>
+            Effect.sync(() =>
+              console.error("session-shell-failure", JSON.stringify({ elapsed: performance.now() - started, trace })),
+            ),
+          ),
+        )
       }),
     ),
   )

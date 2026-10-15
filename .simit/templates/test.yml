@@ -184,7 +184,7 @@ jobs:
             core=0
             tui=0
             GITHUB_ACTIONS=false bun run --cwd packages/core test ./test/session-create.test.ts ./test/pty/pty-windows.test.ts || core=$?
-            GITHUB_ACTIONS=false bun run --cwd packages/tui test ./test/app-lifecycle.test.tsx || tui=$?
+            GITHUB_ACTIONS=false bun run --cwd packages/tui test ./test/app-lifecycle.test.tsx ./test/command-selection.test.tsx || tui=$?
             if [ "$core" -ne 0 ] || [ "$tui" -ne 0 ]; then exit 1; fi
             exit 0
           fi

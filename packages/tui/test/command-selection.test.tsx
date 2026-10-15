@@ -9,6 +9,7 @@ test("custom commands commit the captured agent, model and variant before execut
   const agent = Promise.withResolvers<Response>()
   const model = Promise.withResolvers<Response>()
   const mutations: { type: string; body: unknown }[] = []
+  const requests: string[] = []
   const location = { directory, project: { id: "project", directory, canonical: directory } }
   const session = {
     id: `ses_${crypto.randomUUID()}`,
@@ -29,6 +30,7 @@ test("custom commands commit the captured agent, model and variant before execut
     },
     args: { sessionID: session.id },
     fetch: async (url, request) => {
+      requests.push(`${request.method} ${url.pathname}`)
       if (url.pathname === "/api/location") return json(location)
       if (url.pathname === "/api/agent")
         return json({
@@ -102,6 +104,17 @@ test("custom commands commit the captured agent, model and variant before execut
       type: "command",
       body: { name: "review", text: "selected input", files: [], agents: [], delivery: "steer" },
     })
+  } catch (error) {
+    console.error(
+      "command-selection-failure",
+      JSON.stringify({
+        requests,
+        mutations,
+        focused: setup.renderer.currentFocusedRenderable?.constructor.name,
+        frame: setup.captureCharFrame(),
+      }),
+    )
+    throw error
   } finally {
     agent.resolve(new Response(null, { status: 204 }))
     model.resolve(new Response(null, { status: 204 }))
