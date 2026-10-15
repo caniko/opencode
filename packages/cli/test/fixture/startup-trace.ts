@@ -1,4 +1,6 @@
 // Test-only preload: keep lifecycle evidence on stderr without retaining the process.
+process.env.OPENCODE_PRINT_LOGS = "1"
+process.env.OPENCODE_LOG_LEVEL = "DEBUG"
 const started = performance.now()
 let previous = started
 

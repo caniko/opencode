@@ -66,7 +66,7 @@
     },
     "@opencode/cli#test": {
       "dependsOn": ["^build"],
-      "passThroughEnv": ["OPENCODE_PRINT_LOGS", "OPENCODE_LOG_LEVEL"],
+      "passThroughEnv": ["OPENCODE_TEST_STARTUP_TRACE"],
       "outputs": []
     },
     "@opencode/tui#test": {

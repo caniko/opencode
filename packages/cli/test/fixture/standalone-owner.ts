@@ -9,7 +9,14 @@ await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
       const endpoint = yield* Standalone.start({
-        command: [process.execPath, path.join(import.meta.dir, "../../src/index.ts"), "serve"],
+        command: [
+          process.execPath,
+          ...(process.env.OPENCODE_TEST_STARTUP_TRACE === "1"
+            ? ["--preload", path.join(import.meta.dir, "startup-trace.ts")]
+            : []),
+          path.join(import.meta.dir, "../../src/index.ts"),
+          "serve",
+        ],
       })
       const response = yield* Effect.promise(() =>
         fetch(new URL("/api/info", endpoint.url), { headers: Service.headers(endpoint) }),

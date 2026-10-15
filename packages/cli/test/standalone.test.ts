@@ -6,13 +6,22 @@ import { isolatedEnv } from "./fixture/environment"
 
 test("standalone server exits when its owner is killed", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-cli-standalone-"))
-  const owner = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixture/standalone-owner.ts")], {
-    cwd: path.join(import.meta.dir, ".."),
-    env: isolatedEnv(root, { OPENCODE_SERVER_USERNAME: "custom" }),
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const owner = Bun.spawn(
+    [
+      process.execPath,
+      ...(process.env.OPENCODE_TEST_STARTUP_TRACE === "1"
+        ? ["--preload", path.join(import.meta.dir, "fixture/startup-trace.ts")]
+        : []),
+      path.join(import.meta.dir, "fixture/standalone-owner.ts"),
+    ],
+    {
+      cwd: path.join(import.meta.dir, ".."),
+      env: isolatedEnv(root, { OPENCODE_SERVER_USERNAME: "custom" }),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
   const stderr = new Response(owner.stderr).text()
   const line = await Promise.race([
     readLine(owner.stdout, "STANDALONE_READY "),

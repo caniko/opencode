@@ -161,7 +161,7 @@ jobs:
             export GIT_TRACE2_EVENT="$directory/git-trace.jsonl"
           fi
           if [ "$DIAGNOSTIC_SUITE" = cli-startup ]; then
-            export OPENCODE_PRINT_LOGS=1 OPENCODE_LOG_LEVEL=DEBUG
+            export OPENCODE_TEST_STARTUP_TRACE=1
             GITHUB_ACTIONS=false bun run --cwd packages/cli test ./test/service.test.ts ./test/standalone.test.ts ./test/acp/initialize-auth.subprocess.test.ts ./test/acp/config-options.subprocess.test.ts
             exit $?
           fi
@@ -213,8 +213,7 @@ jobs:
           DIAGNOSTIC_SUITE: ${{ inputs.suite }}
           OPENCODE_TEST_CONCURRENCY: ${{ github.repository == 'caniko/opencode' && '1' || '3' }}
           OPENCODE_TEST_GROUP: ${{ matrix.group }}
-          OPENCODE_PRINT_LOGS: ${{ matrix.group == 'cli' && '1' || '' }}
-          OPENCODE_LOG_LEVEL: ${{ matrix.group == 'cli' && 'DEBUG' || '' }}
+          OPENCODE_TEST_STARTUP_TRACE: ${{ matrix.group == 'cli' && '1' || '' }}
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}

@@ -657,7 +657,7 @@ async function startManagedService(prefix: string, failBoot = false) {
   const owner = Bun.spawn(
     [
       process.execPath,
-      ...(process.env.OPENCODE_PRINT_LOGS === "1"
+      ...(process.env.OPENCODE_TEST_STARTUP_TRACE === "1"
         ? ["--preload", path.join(import.meta.dir, "fixture/startup-trace.ts")]
         : []),
       path.join(import.meta.dir, "../src/index.ts"),

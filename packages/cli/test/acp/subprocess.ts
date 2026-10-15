@@ -198,7 +198,7 @@ function spawnAcp(input: { readonly env: Record<string, string | undefined> }): 
     [
       process.execPath,
       "run",
-      ...(input.env.OPENCODE_PRINT_LOGS === "1"
+      ...(input.env.OPENCODE_TEST_STARTUP_TRACE === "1"
         ? ["--preload", path.join(import.meta.dir, "../fixture/startup-trace.ts")]
         : []),
       "src/index.ts",
