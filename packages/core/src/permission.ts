@@ -10,6 +10,7 @@ import { SessionErrors } from "./session/error.js"
 import { SessionSchema } from "./session/schema.js"
 import { SessionStore } from "./session/store.js"
 import { Wildcard } from "./util/wildcard.js"
+import { BashPermission } from "./util/bash-permission.js"
 import { PermissionSaved } from "./permission/saved.js"
 import { PluginHooks } from "./plugin/hooks.js"
 
@@ -88,7 +89,13 @@ export function evaluate(action: string, resource: string, ...rulesets: Permissi
   return (
     rulesets
       .flat()
-      .findLast((rule) => Wildcard.match(action, rule.action) && Wildcard.match(resource, rule.resource)) ?? {
+      .findLast(
+        (rule) =>
+          Wildcard.match(action, rule.action) &&
+          (action === "shell"
+            ? BashPermission.match(resource, rule.resource, rule.effect)
+            : Wildcard.match(resource, rule.resource)),
+      ) ?? {
       action,
       resource: "*",
       effect: "ask",
