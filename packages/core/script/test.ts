@@ -31,7 +31,8 @@ const environment = {
   OPENCODE_CONFIG: undefined,
   OPENCODE_CONFIG_CONTENT: undefined,
   TMPDIR: temporary,
-  ...(process.platform === "win32" ? { USERPROFILE: home, TMP: temporary, TEMP: temporary } : {}),
+  // Unix fixtures use POSIX commands, not the developer's login-shell syntax.
+  ...(process.platform === "win32" ? { USERPROFILE: home, TMP: temporary, TEMP: temporary } : { SHELL: "/bin/sh" }),
 }
 
 const child = Bun.spawn({

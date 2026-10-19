@@ -3,11 +3,14 @@ import { Deferred, Effect, Fiber, Layer, Queue, Scope, Sink, Stream } from "effe
 import { ChildProcessSpawner } from "effect/unstable/process"
 import { ExitCode, makeHandle, ProcessId } from "effect/unstable/process/ChildProcessSpawner"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { Bus } from "@opencode/core/bus"
 import { Config } from "@opencode/core/config"
 import { Environment } from "@opencode/core/environment/index"
 import { Location } from "@opencode/core/location"
 import { Shell } from "@opencode/core/shell"
+import { Event } from "@opencode/schema/shell"
 import { Global } from "@opencode/util/global"
+import { LayerNode } from "@opencode/util/effect/layer-node"
 import { hostEnvironmentLayer } from "./fixture/environment"
 import { tempGlobalLayer } from "./fixture/global"
 import { tempLocationLayer } from "./fixture/location"
@@ -31,7 +34,7 @@ it.live("eviction makes progress past an already-removed shell", () =>
                 completions,
                 Effect.gen(function* () {
                   yield* Deferred.succeed(exited, ExitCode(0))
-                  // Shell.wait resolves before retention runs; join the whole exit handler instead.
+                  // Join the exit-code observer; terminal bookkeeping follows native-scope cleanup.
                   const fiber = yield* Deferred.await(observer)
                   yield* Fiber.join(fiber).pipe(Effect.orDie)
                 }),
@@ -63,9 +66,12 @@ it.live("eviction makes progress past an already-removed shell", () =>
 
     yield* Effect.gen(function* () {
       const shell = yield* Shell.Service
+      const bus = yield* Bus.Service
+      const deletions = yield* Stream.toQueue(bus.subscribe(Event.Deleted), { capacity: 8 })
       const removed = yield* shell.create({ shell: "sh", command: "removed", timeout: 0 })
       const finishRemoved = yield* Queue.take(completions)
       yield* shell.remove(removed.id)
+      expect((yield* Queue.take(deletions)).data.id).toBe(removed.id)
       expect((yield* shell.result(removed)).capture).toBeUndefined()
       yield* finishRemoved
 
@@ -76,8 +82,10 @@ it.live("eviction makes progress past an already-removed shell", () =>
         return info
       })
       const oldest = yield* complete
-      // Exceed the 25-entry retention cap with the removed ID at the head of exitOrder.
+      // Exceed the 25-entry retention cap after removal raced with process completion.
       yield* Effect.forEach(Array.from({ length: 25 }), () => complete, { discard: true })
+      // Retention runs after the exit-code observer and native cleanup, not inside that observer.
+      expect((yield* Queue.take(deletions)).data.id).toBe(oldest.id)
       expect(yield* shell.get(oldest.id).pipe(Effect.flip)).toBeInstanceOf(Shell.NotFoundError)
 
       const survivor = yield* complete
@@ -87,7 +95,7 @@ it.live("eviction makes progress past an already-removed shell", () =>
       })
     }).pipe(
       Effect.provide(
-        AppNodeBuilder.build(Shell.node, [
+        AppNodeBuilder.build(LayerNode.group([Shell.node, Bus.node]), [
           Location.node.replace(tempLocationLayer),
           Global.node.replace(tempGlobalLayer),
           Config.node.replace(Config.testLayer()),

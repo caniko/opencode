@@ -39,7 +39,9 @@ describe("public import boundaries", () => {
     const effectService = await bundleInputs("@opencode/client/effect/service", "bun")
 
     expect(within(effectService.eager, effect).length).toBeGreaterThan(0)
-    expect(within(effectService.eager, protocol).length).toBeGreaterThan(0)
+    // Local discovery uses its registration/readiness contract, not the network API graph.
+    expect(within(effectService.all, schema)).toEqual([])
+    expect(within(effectService.all, protocol)).toEqual([])
     expect(within(effectService.all, core)).toEqual([])
     expect(within(effectService.all, server)).toEqual([])
   })
