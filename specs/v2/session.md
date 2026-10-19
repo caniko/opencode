@@ -84,6 +84,10 @@ Receipts include terminal root text and aggregate lineage usage when settled. Th
 
 The focused native hosted job runs the lifecycle, readiness, restart, and authenticated API tests once with retries disabled and checks generated-client drift. Its retained reports bind the source, actual runtime, and provider artifact lifetime. `checks.x86_64-linux.managed-execution` separately verifies Nix packaging; a cached check output is not fresh execution evidence. These fixture gates do not establish live-provider or deployment acceptance.
 
+Managed recovery requires a consistent backup of the complete backend database and its associated files. Projected transcript export/import omits ownership reservations, Stop tombstones, pending inbox items, execution claims, background-job recovery records, and durable backend identity. It cannot restore managed execution. Preserve the controller's encrypted original request separately, and stop the source backend before activating a restored copy. Two copies with the same durable identity must never execute concurrently.
+
+The SQLite recovery fixture creates a real `VACUUM INTO` backup and opens it through a fresh backend graph. It verifies durable identity, original-byte ownership, pending root and child inputs, claims, background-job markers, unrelated personal work, and Stop-before-admit. A second backup verifies that a settled Stop survives another restoration and cannot admit or resume work. This covers database recovery; associated files, credentials, and live-provider effects still require deployment-level restoration proof.
+
 ## One Step May Have Several Physical Attempts
 
 Before each Step, the runner reloads Session History, resolves the selected agent and model, prepares instructions, and materializes tools. Most Steps make one Physical Attempt. Generic retry, continuation-state rejection, incomplete-stream continuation, or overflow-triggered compaction may make another attempt without promoting input again.
