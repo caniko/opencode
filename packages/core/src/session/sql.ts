@@ -48,6 +48,7 @@ export const SessionTable = sqliteTable(
     summary_files: integer(),
     summary_diffs: text({ mode: "json" }).$type<FileDiff.LegacyInfo[]>(),
     metadata: text({ mode: "json" }).$type<Session.Metadata>(),
+    environment_required: integer({ mode: "boolean" }),
     cost: real().notNull().default(0),
     tokens_input: integer().notNull().default(0),
     tokens_output: integer().notNull().default(0),
@@ -103,6 +104,17 @@ export const SessionMessageTable = sqliteTable(
     index("session_message_time_created_idx").on(table.time_created),
   ],
 )
+
+// No foreign key: Stop-before-admit and deleted sessions must retain their tombstones.
+export const SessionExternalTable = sqliteTable("session_external", {
+  key: text().primaryKey(),
+  body_sha256: text().notNull(),
+  owner: text().notNull(),
+  session_id: text().$type<SessionSchema.ID>().notNull().unique(),
+  input_id: text().$type<SessionMessage.ID>().notNull().unique(),
+  admitted: integer({ mode: "boolean" }).notNull().default(false),
+  stop_requested: integer({ mode: "boolean" }).notNull().default(false),
+})
 
 export const SessionPartTable = sqliteTable(
   "session_part",

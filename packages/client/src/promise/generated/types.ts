@@ -47,11 +47,13 @@ export type PluginState = { status: "active" } | { status: "failed"; error: stri
 
 export type PluginGuiBundle = { code: string; revision: string; options: { [x: string]: JsonValue } }
 
+export type SessionExternalBackend = { version: 1; backendID: string; backendGeneration: string }
+
+export type SessionExternalKey = string
+
 export type SessionID = string
 
 export type SessionMessageID = string
-
-export type MoneyUSD = number
 
 export type TokenUsageInfo = {
   input: number
@@ -59,6 +61,8 @@ export type TokenUsageInfo = {
   reasoning: number
   cache: { read: number; write: number }
 }
+
+export type MoneyUSD = number
 
 export type RelativePath = string
 
@@ -446,6 +450,27 @@ export type SessionMessageCompactionRunning = {
   status: "running"
   reason: "auto" | "manual"
   summary: string
+}
+
+export type SessionExternalReceipt = {
+  version: 1
+  key: SessionExternalKey
+  bodySha256: string
+  backendID: string
+  backendGeneration: string
+  sessionID: SessionID
+  inputID: SessionMessageID
+  admitted: boolean
+  stopRequested: boolean
+  settled: boolean
+  lineage: Array<{
+    sessionID: SessionID
+    active: boolean
+    pending: number | "Infinity" | "-Infinity" | "NaN"
+    suspended: boolean
+    outcome?: "succeeded" | "failed" | "interrupted"
+  }>
+  result?: { summary: string; costUsd: number | "Infinity" | "-Infinity" | "NaN"; tokens: TokenUsageInfo }
 }
 
 export type UsageLimitsBudgetModel = { providerID: ProviderID; modelID: string; name: string; spent?: MoneyUSD }
@@ -2283,6 +2308,7 @@ export type SessionInfo = {
   title?: string
   subpath?: RelativePath
   metadata?: SessionMetadata
+  environmentRequired?: boolean
   permissions?: PermissionRuleset
   revert?: SessionRevert
   location: LocationPublicRef
@@ -2306,6 +2332,7 @@ export type SessionCreated = {
     agent?: AgentID
     model?: ModelRef
     metadata?: SessionMetadata
+    environmentRequired?: boolean
     permissions?: PermissionRuleset
     version: string
   }
@@ -2939,6 +2966,14 @@ export type PluginNotFoundError = {
 export const isPluginNotFoundError = (value: unknown): value is PluginNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "PluginNotFoundError"
 
+export type ConflictError = {
+  readonly _tag: "ConflictError"
+  readonly message: string
+  readonly resource?: string | undefined
+}
+export const isConflictError = (value: unknown): value is ConflictError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
+
 export type InvalidCursorError = { readonly _tag: "InvalidCursorError"; readonly message: string }
 export const isInvalidCursorError = (value: unknown): value is InvalidCursorError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "InvalidCursorError"
@@ -2959,14 +2994,6 @@ export type MessageNotFoundError = {
 }
 export const isMessageNotFoundError = (value: unknown): value is MessageNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "MessageNotFoundError"
-
-export type ConflictError = {
-  readonly _tag: "ConflictError"
-  readonly message: string
-  readonly resource?: string | undefined
-}
-export const isConflictError = (value: unknown): value is ConflictError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
 
 export type CommandNotFoundError = {
   readonly _tag: "CommandNotFoundError"
@@ -3260,6 +3287,28 @@ export type PluginUpdateInput = {
 
 export type PluginUpdateOutput = void
 
+export type SessionExternalInfoOutput = SessionExternalBackend
+
+export type SessionExternalAdmitInput = { readonly key: string; readonly body: string }
+
+export type SessionExternalAdmitOutput = SessionExternalReceipt
+
+export type SessionExternalStatusInput = { readonly key: string; readonly body: string }
+
+export type SessionExternalStatusOutput = SessionExternalReceipt
+
+export type SessionExternalResumeInput = {
+  readonly key: string
+  readonly body: string
+  readonly backendGeneration: string
+}
+
+export type SessionExternalResumeOutput = SessionExternalReceipt
+
+export type SessionExternalStopInput = { readonly key: string; readonly body: string }
+
+export type SessionExternalStopOutput = SessionExternalReceipt
+
 export type SessionListInput = {
   readonly limit?: number | undefined
   readonly order?: "asc" | "desc" | undefined
@@ -3282,6 +3331,7 @@ export type SessionCreateInput = {
   readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null | undefined
   readonly location?: { readonly directory: string } | null | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | null | undefined
+  readonly environmentRequired?: boolean | null | undefined
   readonly permissions?:
     | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>
     | null
@@ -3778,6 +3828,7 @@ export type ExperimentalSessionImportInput = {
     readonly title?: string
     readonly subpath?: string
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly environmentRequired?: boolean
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string

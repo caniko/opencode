@@ -58,6 +58,8 @@ import m55 from "./migration/20261029002625_session_part.js"
 import m56 from "./migration/20261029073502_session_time_busy.js"
 import m57 from "./migration/20261029165540_schedule_checks.js"
 import m58 from "./migration/20261030054400_job.js"
+import m59 from "./migration/20261108222015_session_environment_required.js"
+import m60 from "./migration/20261108222036_session_external.js"
 
 export const migrations = [
   m00,
@@ -119,4 +121,6 @@ export const migrations = [
   m56,
   m57,
   m58,
+  m59,
+  m60,
 ] satisfies DatabaseMigration.Migration[]

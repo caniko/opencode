@@ -442,6 +442,12 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
       description: "Manage sessions",
       globalFlags: ServerFlags,
       commands: [
+        Spec.make("external", {
+          description: "Reconcile externally owned work with the existing managed backend using JSON on stdin",
+          params: {
+            operation: Argument.Literals("operation", ["info", "admit", "status", "resume", "stop"]),
+          },
+        }),
         Spec.make("list", {
           description: "List top-level sessions in the current project, newest first",
           params: {
@@ -497,11 +503,11 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         Spec.make("wait", {
           description: "Wait for an existing background server without starting or replacing it",
           params: {
-            pid: Flag.integer("pid").pipe(
+            pid: Flag.Int("pid").pipe(
               Flag.withDescription("Required operating system process ID"),
               Flag.withSchema(Schema.Int.check(Schema.isGreaterThan(0))),
             ),
-            timeout: Flag.integer("timeout").pipe(
+            timeout: Flag.Int("timeout").pipe(
               Flag.withDescription("Readiness deadline in seconds"),
               Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 300 }))),
               Flag.withDefault(30),

@@ -94,7 +94,7 @@ test.each(["ready", "starting", "wrong-pid", "wrong-version", "unauthorized", "f
           timeout: 400,
         }).pipe(Effect.provide(NodeFileSystem.layer)),
       )
-      if (mode === "ready" || mode === "starting") expect((await result).url).toBe(listener.url.toString())
+      if (mode === "ready" || mode === "starting") expect((await result)?.url).toBe(listener.url.toString())
       else await expect(result).rejects.toThrow("Timed out waiting for background service")
       expect(Date.now() - started).toBeLessThan(2_000)
       if (mode === "missing") expect(await Bun.file(file).exists()).toBe(false)

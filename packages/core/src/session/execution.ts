@@ -13,6 +13,7 @@ import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
 import { toSessionError } from "./to-session-error.js"
 import { SessionInbox } from "./inbox.js"
+import { SessionEnvironment } from "./environment.js"
 
 export interface Interface {
   /** Snapshots active execution owned by this process. */
@@ -58,6 +59,7 @@ export const layer = Layer.effect(
     const instances = yield* Instance.Service
     const bus = yield* Bus.Service
     const jobs = yield* Job.Service
+    const environments = yield* SessionEnvironment.Service
     const db = (yield* Database.Service).db
     const reportLifecycle = <A>(sessionID: SessionSchema.ID, effect: Effect.Effect<A>) =>
       effect.pipe(
@@ -88,6 +90,7 @@ export const layer = Layer.effect(
       promotable: SessionInbox.Promotable = "input",
       stepped = false,
     ): Effect.fn.Return<void, SessionRunner.RunError> {
+      if (!(yield* environments.ready(sessionID))) return yield* Effect.interrupt
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(new Error(`Session not found: ${sessionID}`))
       const result = yield* SessionRunner.Service.use((runner) =>
@@ -151,7 +154,7 @@ export const layer = Layer.effect(
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
           const interrupted = yield* coordinator.interrupt(sessionID, "user")
-          if (!options?.resume) return interrupted
+          if (!options?.resume || !(yield* environments.ready(sessionID))) return interrupted
           // Resume steering input and between-turn control work from the interrupted
           // intent. Queued next-turn prompts stay parked: a steer-scoped drain never
           // promotes them, and a control item behind a queued prompt waits its turn.
@@ -166,8 +169,8 @@ export const layer = Layer.effect(
             yield* coordinator.wake(sessionID, "steer")
           return interrupted
         }),
-      resume: coordinator.run,
-      wake: coordinator.wake,
+      resume: (sessionID) => coordinator.run(sessionID).pipe(Effect.when(environments.ready(sessionID)), Effect.asVoid),
+      wake: (sessionID) => coordinator.wake(sessionID).pipe(Effect.when(environments.ready(sessionID)), Effect.asVoid),
       awaitIdle: coordinator.awaitIdle,
     })
   }),
@@ -176,7 +179,7 @@ export const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [SessionStore.node, Instance.node, Bus.node, Database.node, Job.node],
+  deps: [SessionStore.node, Instance.node, Bus.node, Database.node, Job.node, SessionEnvironment.node],
 })
 
 /** Low-level compatibility layer for callers that only need durable Session recording. */
