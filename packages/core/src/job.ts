@@ -126,6 +126,8 @@ export type BackgroundAllInput = {
 }
 
 export interface Interface {
+  /** Process-local recoverable jobs owned by any of these Sessions, including background work. */
+  readonly forSessions: (sessionIDs: ReadonlySet<SessionSchema.ID>) => Effect.Effect<readonly Info[]>
   readonly get: (id: string) => Effect.Effect<Info | undefined>
   readonly start: (input: StartInput) => Effect.Effect<Info>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
@@ -465,6 +467,20 @@ export const make = Effect.gen(function* () {
   )
 
   return Service.of({
+    forSessions: (sessionIDs) =>
+      SynchronizedRef.get(state.jobs).pipe(
+        Effect.map((jobs) =>
+          [...jobs.values()]
+            .filter(
+              (job) =>
+                job.recovery &&
+                (job.recovery.kind === "shell"
+                  ? sessionIDs.has(job.recovery.sessionID)
+                  : sessionIDs.has(job.recovery.parentSessionID) || sessionIDs.has(job.recovery.childSessionID)),
+            )
+            .map(snapshot),
+        ),
+      ),
     get,
     start,
     wait,

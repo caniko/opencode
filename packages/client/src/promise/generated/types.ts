@@ -30,9 +30,9 @@ export type PluginFeatures = { server?: true; tui?: true; rpc?: true }
 
 export type PluginState = { status: "active" } | { status: "failed"; error: string; ref?: string }
 
-export type SessionForkBoundary = { type: "before"; messageID: string } | { type: "through"; messageID: string }
+export type SessionExternalBackend = { version: 1; backendID: string; backendGeneration: string }
 
-export type MoneyUSD = number
+export type SessionExternalKey = string
 
 export type TokenUsageInfo = {
   input: number
@@ -40,6 +40,10 @@ export type TokenUsageInfo = {
   reasoning: number
   cache: { read: number; write: number }
 }
+
+export type SessionForkBoundary = { type: "before"; messageID: string } | { type: "through"; messageID: string }
+
+export type MoneyUSD = number
 
 export type SessionMetadata = { [x: string]: JsonValue }
 
@@ -494,6 +498,27 @@ export type ConfigProviderSettings = {
 export type PermissionRule = { action: string; resource: string; effect: PermissionEffect }
 
 export type PluginInfo = { id?: string; source: PluginSource; features: PluginFeatures; state: PluginState }
+
+export type SessionExternalReceipt = {
+  version: 1
+  key: SessionExternalKey
+  bodySha256: string
+  backendID: string
+  backendGeneration: string
+  sessionID: string
+  inputID: string
+  admitted: boolean
+  stopRequested: boolean
+  settled: boolean
+  lineage: Array<{
+    sessionID: string
+    active: boolean
+    pending: number | "Infinity" | "-Infinity" | "NaN"
+    suspended: boolean
+    outcome?: "succeeded" | "failed" | "interrupted"
+  }>
+  result?: { summary: string; costUsd: number | "Infinity" | "-Infinity" | "NaN"; tokens: TokenUsageInfo }
+}
 
 export type SessionRevert = { messageID: string; partID?: string; snapshot?: string; files?: Array<FileDiffInfo> }
 
@@ -1999,6 +2024,7 @@ export type SessionInfo = {
   title?: string
   subpath?: string
   metadata?: SessionMetadata
+  environmentRequired?: boolean
   permissions?: PermissionRuleset
   revert?: SessionRevert
   location: LocationPublicRef
@@ -2022,6 +2048,7 @@ export type SessionCreated = {
     agent?: string
     model?: ModelRef
     metadata?: SessionMetadata
+    environmentRequired?: boolean
     permissions?: PermissionRuleset
     version: string
   }
@@ -2541,6 +2568,14 @@ export type AgentNotFoundError = {
 export const isAgentNotFoundError = (value: unknown): value is AgentNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "AgentNotFoundError"
 
+export type ConflictError = {
+  readonly _tag: "ConflictError"
+  readonly message: string
+  readonly resource?: string | undefined
+}
+export const isConflictError = (value: unknown): value is ConflictError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
+
 export type InvalidCursorError = { readonly _tag: "InvalidCursorError"; readonly message: string }
 export const isInvalidCursorError = (value: unknown): value is InvalidCursorError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "InvalidCursorError"
@@ -2552,14 +2587,6 @@ export type SessionNotFoundError = {
 }
 export const isSessionNotFoundError = (value: unknown): value is SessionNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "SessionNotFoundError"
-
-export type ConflictError = {
-  readonly _tag: "ConflictError"
-  readonly message: string
-  readonly resource?: string | undefined
-}
-export const isConflictError = (value: unknown): value is ConflictError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
 
 export type UnknownError = {
   readonly _tag: "UnknownError"
@@ -2799,6 +2826,41 @@ export type PluginUpdateInput = {
 
 export type PluginUpdateOutput = void
 
+export type SessionExternalInfoOutput = SessionExternalBackend
+
+export type SessionExternalAdmitInput = {
+  readonly key: { readonly key: string; readonly body: string }["key"]
+  readonly body: { readonly key: string; readonly body: string }["body"]
+}
+
+export type SessionExternalAdmitOutput = SessionExternalReceipt
+
+export type SessionExternalStatusInput = {
+  readonly key: { readonly key: string; readonly body: string }["key"]
+  readonly body: { readonly key: string; readonly body: string }["body"]
+}
+
+export type SessionExternalStatusOutput = SessionExternalReceipt
+
+export type SessionExternalResumeInput = {
+  readonly key: { readonly key: string; readonly body: string; readonly backendGeneration: string }["key"]
+  readonly body: { readonly key: string; readonly body: string; readonly backendGeneration: string }["body"]
+  readonly backendGeneration: {
+    readonly key: string
+    readonly body: string
+    readonly backendGeneration: string
+  }["backendGeneration"]
+}
+
+export type SessionExternalResumeOutput = SessionExternalReceipt
+
+export type SessionExternalStopInput = {
+  readonly key: { readonly key: string; readonly body: string }["key"]
+  readonly body: { readonly key: string; readonly body: string }["body"]
+}
+
+export type SessionExternalStopOutput = SessionExternalReceipt
+
 export type SessionListInput = {
   readonly limit?: {
     readonly limit?: number | undefined
@@ -2933,6 +2995,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -2947,6 +3010,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -2961,6 +3025,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -2975,6 +3040,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -2989,6 +3055,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -3003,6 +3070,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -3017,12 +3085,28 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
     }> | null
   }["metadata"]
+  readonly environmentRequired?: {
+    readonly id?: string | null
+    readonly parentID?: string | null
+    readonly title?: string | null
+    readonly agent?: string | null
+    readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
+    readonly location?: { readonly directory: string } | null
+    readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
+    readonly permissions?: ReadonlyArray<{
+      readonly action: string
+      readonly resource: string
+      readonly effect: "allow" | "deny" | "ask"
+    }> | null
+  }["environmentRequired"]
   readonly permissions?: {
     readonly id?: string | null
     readonly parentID?: string | null
@@ -3031,6 +3115,7 @@ export type SessionCreateInput = {
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null
     readonly location?: { readonly directory: string } | null
     readonly metadata?: { readonly [x: string]: JsonValue } | null
+    readonly environmentRequired?: boolean | null
     readonly permissions?: ReadonlyArray<{
       readonly action: string
       readonly resource: string
@@ -3073,6 +3158,7 @@ export type SessionImportInput = {
       readonly title?: string
       readonly subpath?: string
       readonly metadata?: { readonly [x: string]: JsonValue }
+      readonly environmentRequired?: boolean
       readonly permissions?: ReadonlyArray<{
         readonly action: string
         readonly resource: string
@@ -3410,6 +3496,7 @@ export type SessionImportInput = {
       readonly title?: string
       readonly subpath?: string
       readonly metadata?: { readonly [x: string]: JsonValue }
+      readonly environmentRequired?: boolean
       readonly permissions?: ReadonlyArray<{
         readonly action: string
         readonly resource: string
@@ -3747,6 +3834,7 @@ export type SessionImportInput = {
       readonly title?: string
       readonly subpath?: string
       readonly metadata?: { readonly [x: string]: JsonValue }
+      readonly environmentRequired?: boolean
       readonly permissions?: ReadonlyArray<{
         readonly action: string
         readonly resource: string

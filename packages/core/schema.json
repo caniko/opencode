@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "e98619ef-c334-45e3-8c48-9932ed1ef290",
-  "prevIds": ["be60f352-8da1-40e1-8d70-dc41121cfbc5"],
+  "id": "83cc5916-97e9-4f58-930f-a83330702a8d",
+  "prevIds": ["3fdb0c39-873e-4efc-96c5-2849a543353d"],
   "ddl": [
     {
       "name": "account_state",
@@ -54,6 +54,10 @@
     },
     {
       "name": "instruction_state",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_external",
       "entityType": "tables"
     },
     {
@@ -866,6 +870,76 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "key",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "body_sha256",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "input_id",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "admitted",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "stop_requested",
+      "entityType": "columns",
+      "table": "session_external"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "id",
       "entityType": "columns",
       "table": "session_inbox"
@@ -1237,6 +1311,16 @@
       "default": null,
       "generated": null,
       "name": "metadata",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "environment_required",
       "entityType": "columns",
       "table": "session_v2"
     },
@@ -1740,6 +1824,13 @@
       "entityType": "pks"
     },
     {
+      "columns": ["key"],
+      "nameExplicit": false,
+      "name": "session_external_pk",
+      "table": "session_external",
+      "entityType": "pks"
+    },
+    {
       "columns": ["id"],
       "nameExplicit": false,
       "name": "session_inbox_pk",
@@ -2061,6 +2152,20 @@
       "name": "session_v2_time_suspended_idx",
       "entityType": "indexes",
       "table": "session_v2"
+    },
+    {
+      "columns": ["session_id"],
+      "nameExplicit": false,
+      "name": "session_external_session_id_unique",
+      "entityType": "uniques",
+      "table": "session_external"
+    },
+    {
+      "columns": ["input_id"],
+      "nameExplicit": false,
+      "name": "session_external_input_id_unique",
+      "entityType": "uniques",
+      "table": "session_external"
     }
   ],
   "renames": []

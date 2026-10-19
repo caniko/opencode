@@ -144,6 +144,17 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_external\` (
+          \`key\` text PRIMARY KEY,
+          \`body_sha256\` text NOT NULL,
+          \`owner\` text NOT NULL,
+          \`session_id\` text NOT NULL UNIQUE,
+          \`input_id\` text NOT NULL UNIQUE,
+          \`admitted\` integer DEFAULT false NOT NULL,
+          \`stop_requested\` integer DEFAULT false NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session_inbox\` (
           \`id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -198,6 +209,7 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
           \`summary_files\` integer,
           \`summary_diffs\` text,
           \`metadata\` text,
+          \`environment_required\` integer,
           \`cost\` real DEFAULT 0 NOT NULL,
           \`tokens_input\` integer DEFAULT 0 NOT NULL,
           \`tokens_output\` integer DEFAULT 0 NOT NULL,

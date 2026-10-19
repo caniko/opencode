@@ -11,6 +11,7 @@ import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
+import { SessionEnvironment } from "../environment.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
   "The server restarted while you were working. Continue from where you left off without repeating completed work."
@@ -41,6 +42,8 @@ export interface Interface {
    * the resume path leaves the same orphaned claim for the next boot.
    */
   readonly resumeSuspendedSessions: Effect.Effect<void>
+  /** Reconcile only this externally owned lineage after its environment and Stop have been restored. */
+  readonly resumeSessions: (sessionIDs: ReadonlySet<SessionSchema.ID>) => Effect.Effect<void>
 }
 
 /**
@@ -71,10 +74,12 @@ export const layer = (options?: Options) =>
       const bus = yield* Bus.Service
       const jobs = yield* Job.Service
       const sessions = yield* Session.Service
+      const environments = yield* SessionEnvironment.Service
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
 
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+        if (!(yield* environments.ready(sessionID))) return false
         // Durable before the resume runs, so a crash inside the resumed turn is
         // counted by the next sweep and the budget cannot be dodged.
         const attempts = yield* store.countResume(sessionID)
@@ -145,6 +150,9 @@ export const layer = (options?: Options) =>
           yield* jobs.completeBackground(background.notificationID)
           return
         }
+        // Keep the durable job and its claim until the external owner has
+        // restored the inherited environment and reconciled any pending Stop.
+        if (!(yield* environments.ready(recovery.childSessionID))) return
 
         const notify = Effect.fnUntraced(function* (result: Pick<Job.Background, "status" | "output" | "error">) {
           yield* SubagentCompletion.deliver(sessions, jobs, {
@@ -189,10 +197,16 @@ export const layer = (options?: Options) =>
         )
       })
 
-      return Service.of({
-        resumeSuspendedSessions: Effect.gen(function* () {
+      const recover = (only?: ReadonlySet<SessionSchema.ID>) =>
+        Effect.gen(function* () {
           const active = yield* execution.active
-          const pending = yield* jobs.pendingBackground
+          const pending = (yield* jobs.pendingBackground).filter(
+            (background) =>
+              !only ||
+              (background.recovery.kind === "shell"
+                ? only.has(background.recovery.sessionID)
+                : only.has(background.recovery.childSessionID) && only.has(background.recovery.parentSessionID)),
+          )
           const children = pending.flatMap((background) =>
             background.status === "running" && background.recovery.kind === "subagent"
               ? [background.recovery.childSessionID]
@@ -200,9 +214,15 @@ export const layer = (options?: Options) =>
           )
           // Early notices wait for recovery's accounting, including Sessions that exhaust their budget.
           const suspended = new Set(
-            [...(yield* store.listSuspended()), ...children].filter((sessionID) => !active.has(sessionID)),
+            [...(yield* store.listSuspended()), ...children].filter(
+              (sessionID) => (!only || only.has(sessionID)) && !active.has(sessionID),
+            ),
           )
-          yield* store.releaseChildClaims(children)
+          const parked = yield* Effect.filter(
+            (yield* store.list()).filter((session) => session.parentID && session.environmentRequired),
+            (session) => environments.ready(session.id).pipe(Effect.map((ready) => !ready)),
+          )
+          if (!only) yield* store.releaseChildClaims([...children, ...parked.map((session) => session.id)])
           yield* Effect.forEach(
             // Admit shell outcomes before a recovered child can start its first model request.
             pending.toSorted((a, b) => Number(a.recovery.kind === "subagent") - Number(b.recovery.kind === "subagent")),
@@ -219,7 +239,9 @@ export const layer = (options?: Options) =>
           // Background completion can wake a parent, so inspect local ownership only after recovery.
           const resumed = yield* execution.active
           yield* Effect.forEach(
-            (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID)),
+            (yield* store.listSuspended()).filter(
+              (sessionID) => (!only || only.has(sessionID)) && !resumed.has(sessionID),
+            ),
             (sessionID) =>
               execution
                 .resume(sessionID)
@@ -228,7 +250,10 @@ export const layer = (options?: Options) =>
           )
           // Async observers consult this set at delivery; later completions wake parents normally.
           suspended.clear()
-        }),
+        })
+      return Service.of({
+        resumeSuspendedSessions: recover(),
+        resumeSessions: recover,
       })
     }),
   )
@@ -236,5 +261,5 @@ export const layer = (options?: Options) =>
 export const node = makeGlobalNode({
   service: Service,
   layer: layer(),
-  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node],
+  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node, SessionEnvironment.node],
 })

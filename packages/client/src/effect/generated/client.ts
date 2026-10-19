@@ -22,6 +22,15 @@ import type {
   PluginCheckOutput,
   PluginUpdateInput,
   PluginUpdateOutput,
+  SessionExternalInfoOutput,
+  SessionExternalAdmitInput,
+  SessionExternalAdmitOutput,
+  SessionExternalStatusInput,
+  SessionExternalStatusOutput,
+  SessionExternalResumeInput,
+  SessionExternalResumeOutput,
+  SessionExternalStopInput,
+  SessionExternalStopOutput,
   SessionListInput,
   SessionListOutput,
   SessionStatsInput,
@@ -358,6 +367,37 @@ const adaptGroupPlugin = (raw: RawClient["server.plugin"]) => ({
   update: EndpointPluginUpdate(raw),
 })
 
+const EndpointSessionExternalInfo = (raw: RawClient["server.session"]) => () =>
+  preserveEffect<SessionExternalInfoOutput>()(raw["session.external.info"]({}).pipe(Effect.mapError(mapClientError)))
+
+const EndpointSessionExternalAdmit = (raw: RawClient["server.session"]) => (input: SessionExternalAdmitInput) =>
+  preserveEffect<SessionExternalAdmitOutput>()(
+    raw["session.external.admit"]({ payload: { key: input["key"], body: input["body"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
+  )
+
+const EndpointSessionExternalStatus = (raw: RawClient["server.session"]) => (input: SessionExternalStatusInput) =>
+  preserveEffect<SessionExternalStatusOutput>()(
+    raw["session.external.status"]({ payload: { key: input["key"], body: input["body"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
+  )
+
+const EndpointSessionExternalResume = (raw: RawClient["server.session"]) => (input: SessionExternalResumeInput) =>
+  preserveEffect<SessionExternalResumeOutput>()(
+    raw["session.external.resume"]({
+      payload: { key: input["key"], body: input["body"], backendGeneration: input["backendGeneration"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointSessionExternalStop = (raw: RawClient["server.session"]) => (input: SessionExternalStopInput) =>
+  preserveEffect<SessionExternalStopOutput>()(
+    raw["session.external.stop"]({ payload: { key: input["key"], body: input["body"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
+  )
+
 const EndpointSessionList = (raw: RawClient["server.session"]) => (input?: SessionListInput) =>
   preserveEffect<SessionListOutput>()(
     raw["session.list"]({
@@ -401,6 +441,7 @@ const EndpointSessionCreate = (raw: RawClient["server.session"]) => (input?: Ses
         model: input?.["model"],
         location: input?.["location"],
         metadata: input?.["metadata"],
+        environmentRequired: input?.["environmentRequired"],
         permissions: input?.["permissions"],
       },
     }).pipe(
@@ -760,6 +801,13 @@ const EndpointSessionView = (raw: RawClient["server.session"]) => (input: Sessio
   )
 
 const adaptGroupSession = (raw: RawClient["server.session"]) => ({
+  external: {
+    info: EndpointSessionExternalInfo(raw),
+    admit: EndpointSessionExternalAdmit(raw),
+    status: EndpointSessionExternalStatus(raw),
+    resume: EndpointSessionExternalResume(raw),
+    stop: EndpointSessionExternalStop(raw),
+  },
   list: EndpointSessionList(raw),
   stats: EndpointSessionStats(raw),
   create: EndpointSessionCreate(raw),
