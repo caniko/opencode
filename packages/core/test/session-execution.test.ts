@@ -375,6 +375,43 @@ describe("SessionExecution lifecycle", () => {
 })
 
 describe("SessionRestart background recovery", () => {
+  it.effect("reports queued intents as interrupted without replay or an unverified cancellation claim", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const sessionID = Session.ID.make("ses_queued_restart")
+      yield* seedSessions(database, [sessionID])
+      yield* jobs.start({
+        id: "sh_queued_restart",
+        type: "shell",
+        queued: true,
+        recovery: { kind: "shell", sessionID, shellID: "sh_queued_restart", command: "queued work" },
+        run: Effect.never,
+      })
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Scope.provide(scope))
+      const drained: Session.ID[] = []
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) => Effect.sync(() => void drained.push(sessionID)),
+        undefined,
+        restarted,
+      )
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      expect(drained).toEqual([])
+      expect(yield* SessionInbox.list(database.db, sessionID)).toMatchObject([
+        {
+          payload: {
+            text: expect.stringContaining("will not be replayed automatically"),
+            metadata: { source: "shell", shellID: "sh_queued_restart", state: "error" },
+          },
+        },
+      ])
+      expect(yield* restarted.pendingBackground).toEqual([])
+    }),
+  )
+
   it.effect("keeps shell owners idle until a user prompt delivers recovered notices exactly once", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -436,7 +473,7 @@ describe("SessionRestart background recovery", () => {
             source: "shell",
             jobID: "sh_background_orphan",
             shellID: "sh_background_orphan",
-            state: "cancelled",
+            state: "error",
           },
         },
       ])
@@ -447,7 +484,7 @@ describe("SessionRestart background recovery", () => {
             source: "shell",
             jobID: "call-child-shell",
             shellID: "sh_child_orphan",
-            state: "cancelled",
+            state: "error",
           },
         },
       ])
@@ -603,7 +640,7 @@ describe("SessionRestart background recovery", () => {
     }),
   )
 
-  it.effect("delivers cancellation at the resumed parent's next step", () =>
+  it.effect("delivers the interrupted outcome at the resumed parent's next step", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
       const jobs = yield* Job.Service
@@ -638,7 +675,7 @@ describe("SessionRestart background recovery", () => {
       yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
       expect(yield* Deferred.await(observed)).toEqual([
         "The server restarted while you were working. Continue from where you left off without repeating completed work.",
-        expect.stringContaining("Command cancelled because the server restarted"),
+        expect.stringContaining("will not be replayed automatically"),
       ])
       yield* execution.awaitIdle(parent)
       expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
@@ -675,7 +712,7 @@ describe("SessionRestart background recovery", () => {
       expect(yield* claims(database)).toEqual({ [sessionID]: false })
       expect(yield* attempts(database, sessionID)).toBe(0)
       expect(yield* SessionInbox.list(database.db, sessionID)).toMatchObject([
-        { payload: { metadata: { source: "shell", state: "cancelled" } } },
+        { payload: { metadata: { source: "shell", state: "error" } } },
       ])
       expect(yield* restarted.pendingBackground).toEqual([])
       yield* restart.resumeSuspendedSessions
@@ -760,7 +797,7 @@ describe("SessionRestart background recovery", () => {
                 attempts: 2,
                 notices: [
                   expect.stringContaining("The server restarted while you were working"),
-                  expect.stringContaining("Command cancelled because the server restarted"),
+                  expect.stringContaining("will not be replayed automatically"),
                 ],
               })
               expect(drained).toEqual([child])

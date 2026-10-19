@@ -6,6 +6,7 @@ import { describe, expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Schedule, Scope, Stream } from "effect"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { ProcessGovernor } from "@opencode/util/process-governor"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
 import { filesystem } from "@opencode/util/effect/app-node-platform"
@@ -1571,6 +1572,65 @@ describe("ShellTool", () => {
     { timeout: 15_000 },
   )
 
+  it.live("returns and persists a background handle before resource admission", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        withSession(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const jobs = yield* Job.Service
+            const shell = yield* Shell.Service
+            const lease = yield* ProcessGovernor.acquire("heavy")
+            yield* Effect.addFinalizer(() => lease.release)
+            const result = yield* executeTool(
+              registry,
+              call(
+                {
+                  command: "amc admission exec --contract tool -- true",
+                  background: true,
+                  timeout: 50,
+                },
+                "call-queued-admission",
+              ),
+            ).pipe(Effect.timeout("1 second"))
+            expect(result.metadata?.status).toBe("queued")
+            const id = ID.make(String(result.metadata?.shellID))
+            expect(yield* jobs.get(id)).toMatchObject({ status: "queued" })
+            expect((yield* jobs.pendingBackground).find((entry) => entry.id === id)).toMatchObject({ status: "queued" })
+            yield* Effect.sleep("100 millis")
+            expect((yield* shell.get(id)).status).toBe("queued")
+            yield* jobs.cancel(id)
+            expect((yield* shell.list()).some((entry) => entry.id === id)).toBe(false)
+          }),
+        ),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+    ),
+  )
+
+  it.live("acknowledges foreground cancellation after queued producer cleanup", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        withSession(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const jobs = yield* Job.Service
+            const shell = yield* Shell.Service
+            const lease = yield* ProcessGovernor.acquire("heavy")
+            yield* Effect.addFinalizer(() => lease.release)
+            const waiting = yield* executeTool(
+              registry,
+              call({ command: "amc admission exec --contract tool -- true" }, "call-cancel-queued"),
+            ).pipe(Effect.forkScoped)
+            const queued = yield* shell.list().pipe(Effect.repeat({ until: (entries) => entries.length > 0 }))
+            yield* Fiber.interrupt(waiting)
+            expect((yield* shell.list()).length).toBe(0)
+            expect((yield* jobs.pendingBackground).some((job) => job.id === queued[0]!.id)).toBe(false)
+          }),
+        ),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+    ),
+  )
+
   it.live("returns the shell id for a background command", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -1596,7 +1656,10 @@ describe("ShellTool", () => {
             expect(settled.content).toEqual([
               {
                 type: "text",
-                text: `Command moved to the background (shell ID: ${shellID}).\nOutput is streaming to: ${info.file}`,
+                text:
+                  settled.metadata?.status === "queued"
+                    ? `Command queued in the background (shell ID: ${shellID}).\nOutput will be saved to: ${info.file}`
+                    : `Command moved to the background (shell ID: ${shellID}).\nOutput is streaming to: ${info.file}`,
               },
               {
                 type: "text",
@@ -1810,7 +1873,7 @@ describe("ShellTool", () => {
               expect(typeof shellID).toBe("string")
               if (typeof shellID !== "string") return
               const id = ID.make(shellID)
-              const info = yield* shell.get(id)
+              const info = yield* shell.started(id)
               expect(typeof info.pid).toBe("number")
               if (info.pid === undefined) return
 
@@ -1867,7 +1930,10 @@ describe("ShellTool", () => {
             const info = yield* shell.get(id)
             expect(settled.content?.[0]).toEqual({
               type: "text",
-              text: `Command moved to the background (shell ID: ${shellID}).\nOutput is streaming to: ${info.file}`,
+              text:
+                settled.metadata?.status === "queued"
+                  ? `Command queued in the background (shell ID: ${shellID}).\nOutput will be saved to: ${info.file}`
+                  : `Command moved to the background (shell ID: ${shellID}).\nOutput is streaming to: ${info.file}`,
             })
             expect(settled.content?.[1]).toEqual({
               type: "text",

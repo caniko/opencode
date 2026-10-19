@@ -114,7 +114,7 @@ export type SessionMessageShell = {
   type: "shell"
   shellID: string
   command: string
-  status: "running" | "exited" | "timeout" | "killed"
+  status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
   exit?: number | "Infinity" | "-Infinity" | "NaN"
   output?: { output: string; cursor: number; size: number; truncated: boolean }
 }
@@ -181,7 +181,7 @@ export type SessionInboxSyntheticPayload1 = { text: string; description?: string
 
 export type ShellInfo = {
   id: string
-  status: "running" | "exited" | "timeout" | "killed"
+  status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
   command: string
   cwd: string
   shell: string
@@ -189,8 +189,9 @@ export type ShellInfo = {
   pid?: number
   exit?: number
   signal?: string
+  error?: string
   metadata: { [x: string]: any }
-  time: { started: number; completed?: number }
+  time: { queued?: number; started?: number; completed?: number }
 }
 
 export type SessionMessageProviderState1 = { [x: string]: any }
@@ -396,7 +397,7 @@ export type PersistentPtyHandoff = { directory: string; instanceID: string; tick
 
 export type ShellInfo1 = {
   id: string
-  status: "running" | "exited" | "timeout" | "killed"
+  status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
   command: string
   cwd: string
   shell: string
@@ -404,8 +405,9 @@ export type ShellInfo1 = {
   pid?: number
   exit?: number
   signal?: string
+  error?: string
   metadata: { [x: string]: JsonValue }
-  time: { started: number; completed?: number }
+  time: { queued?: number; started?: number; completed?: number }
 }
 
 export type ReferenceLocalSource = { type: "local"; path: string }
@@ -1081,7 +1083,7 @@ export type ShellExited = {
   metadata?: { [x: string]: any }
   type: "shell.exited"
   location?: LocationRef
-  data: { id: string; exit?: number; status: "running" | "exited" | "timeout" | "killed" }
+  data: { id: string; exit?: number; status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed" }
 }
 
 export type ShellDeleted = {
@@ -1277,6 +1279,15 @@ export type ShellCreated = {
   created: number
   metadata?: { [x: string]: any }
   type: "shell.created"
+  location?: LocationRef
+  data: { info: ShellInfo }
+}
+
+export type ShellStarted = {
+  id: string
+  created: number
+  metadata?: { [x: string]: any }
+  type: "shell.started"
   location?: LocationRef
   data: { info: ShellInfo }
 }
@@ -2490,6 +2501,7 @@ export type V2Event =
   | PersistentPtyAdded
   | PersistentPtyRemoved
   | ShellCreated
+  | ShellStarted
   | ShellExited
   | ShellDeleted
   | FormCreated
@@ -3180,7 +3192,7 @@ export type SessionImportInput = {
           readonly type: "shell"
           readonly shellID: string
           readonly command: string
-          readonly status: "running" | "exited" | "timeout" | "killed"
+          readonly status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
           readonly exit?: number | "Infinity" | "-Infinity" | "NaN"
           readonly output?: {
             readonly output: string
@@ -3517,7 +3529,7 @@ export type SessionImportInput = {
           readonly type: "shell"
           readonly shellID: string
           readonly command: string
-          readonly status: "running" | "exited" | "timeout" | "killed"
+          readonly status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
           readonly exit?: number | "Infinity" | "-Infinity" | "NaN"
           readonly output?: {
             readonly output: string
@@ -3854,7 +3866,7 @@ export type SessionImportInput = {
           readonly type: "shell"
           readonly shellID: string
           readonly command: string
-          readonly status: "running" | "exited" | "timeout" | "killed"
+          readonly status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
           readonly exit?: number | "Infinity" | "-Infinity" | "NaN"
           readonly output?: {
             readonly output: string
@@ -6379,24 +6391,48 @@ export type ShellCreateInput = {
     readonly command: string
     readonly cwd?: string
     readonly timeout?: number
+    readonly queueTimeout?: number
+    readonly background?: boolean
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["command"]
   readonly cwd?: {
     readonly command: string
     readonly cwd?: string
     readonly timeout?: number
+    readonly queueTimeout?: number
+    readonly background?: boolean
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["cwd"]
   readonly timeout?: {
     readonly command: string
     readonly cwd?: string
     readonly timeout?: number
+    readonly queueTimeout?: number
+    readonly background?: boolean
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["timeout"]
+  readonly queueTimeout?: {
+    readonly command: string
+    readonly cwd?: string
+    readonly timeout?: number
+    readonly queueTimeout?: number
+    readonly background?: boolean
+    readonly metadata?: { readonly [x: string]: JsonValue }
+  }["queueTimeout"]
+  readonly background?: {
+    readonly command: string
+    readonly cwd?: string
+    readonly timeout?: number
+    readonly queueTimeout?: number
+    readonly background?: boolean
+    readonly metadata?: { readonly [x: string]: JsonValue }
+  }["background"]
   readonly metadata?: {
     readonly command: string
     readonly cwd?: string
     readonly timeout?: number
+    readonly queueTimeout?: number
+    readonly background?: boolean
     readonly metadata?: { readonly [x: string]: JsonValue }
   }["metadata"]
 }

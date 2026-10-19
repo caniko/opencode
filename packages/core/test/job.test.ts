@@ -11,6 +11,121 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Job.node, KV.node])))
 
 describe("Job", () => {
+  it.live("returns typed submission backpressure without displacing accepted jobs", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const accepted = yield* Effect.forEach(Array.from({ length: Job.ACTIVE_LIMIT }), () =>
+        jobs.start({
+          type: "shell",
+          queued: true,
+          run: Effect.never,
+        }),
+      )
+      expect(yield* jobs.start({ type: "shell", queued: true, run: Effect.never }).pipe(Effect.flip)).toMatchObject({
+        _tag: "Job.CapacityError",
+        retryAfterMs: 250,
+      })
+      expect(yield* jobs.get(accepted[0]!.id)).toMatchObject({ status: "queued" })
+      yield* jobs.cancel(accepted[0]!.id)
+      const retry = yield* jobs.start({ type: "shell", queued: true, run: Effect.never })
+      expect(retry.status).toBe("queued")
+      yield* Effect.forEach([...accepted.slice(1), retry], (job) => jobs.cancel(job.id))
+    }),
+  )
+
+  it.live("does not publish a cancelled outcome before producer cleanup finishes", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const entered = yield* Deferred.make<void>()
+      const cleaning = yield* Deferred.make<void>()
+      const cleaned = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "test",
+        run: Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(cleaned)))),
+        ),
+      })
+      yield* Deferred.await(entered)
+      const cancelled = yield* jobs.cancel(job.id).pipe(Effect.forkScoped)
+      yield* Deferred.await(cleaning)
+      expect(yield* jobs.wait({ id: job.id, timeout: 0 })).toMatchObject({ timedOut: true })
+      yield* Deferred.succeed(cleaned, undefined)
+      expect(yield* Fiber.join(cancelled)).toMatchObject({ status: "cancelled" })
+      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({ status: "cancelled" })
+    }),
+  )
+
+  it.live("durably publishes queued work before preparation or admission starts", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const admitted = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<string>()
+      const observed = yield* Deferred.make<void>()
+      const id = "job_queued_before_admission"
+      const job = yield* jobs.start({
+        id,
+        type: "shell",
+        queued: true,
+        recovery: {
+          kind: "shell",
+          sessionID: SessionSchema.ID.make("ses_queue_owner"),
+          shellID: "sh_waiting",
+          command: "queued command",
+        },
+        run: (started) =>
+          Effect.gen(function* () {
+            expect(yield* jobs.get(id)).toMatchObject({ status: "queued" })
+            expect((yield* jobs.pendingBackground).find((entry) => entry.id === id)).toMatchObject({ status: "queued" })
+            yield* Deferred.succeed(observed, undefined)
+            yield* Deferred.await(admitted)
+            yield* started
+            return yield* Deferred.await(finish)
+          }),
+      })
+      yield* Deferred.await(observed)
+      expect(job).toMatchObject({ id, status: "queued" })
+      expect(job.executed_at).toBeUndefined()
+      expect(yield* jobs.wait({ id, timeout: 0 })).toMatchObject({ timedOut: true, info: { status: "queued" } })
+      yield* jobs.background(id)
+      yield* Deferred.succeed(admitted, undefined)
+      yield* jobs.get(id).pipe(Effect.repeat({ until: (info) => info?.status === "running" }))
+      expect((yield* jobs.get(id))?.executed_at).toBeNumber()
+      yield* Deferred.succeed(finish, "done")
+      expect((yield* jobs.wait({ id })).info).toMatchObject({ status: "completed", output: "done" })
+    }),
+  )
+
+  it.live("cancels queued work without starting its payload", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const admitted = yield* Deferred.make<void>()
+      const payload = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "shell",
+        queued: true,
+        run: (started) =>
+          Deferred.await(admitted).pipe(
+            Effect.andThen(started),
+            Effect.andThen(Deferred.succeed(payload, undefined)),
+            Effect.as("must not execute"),
+          ),
+      })
+      expect(yield* jobs.cancel(job.id)).toMatchObject({ status: "cancelled" })
+      yield* Deferred.succeed(admitted, undefined)
+      expect(yield* Deferred.isDone(payload)).toBe(false)
+      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({ status: "cancelled" })
+    }),
+  )
+
+  it.live("settles preparation failures directly from queued", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const job = yield* jobs.start({ type: "shell", queued: true, run: Effect.fail(new Error("preparation refused")) })
+      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({ status: "error", error: "preparation refused" })
+    }),
+  )
+
   it.live("tracks process-local work through explicit observation", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service

@@ -1405,7 +1405,14 @@ const EndpointShellCreate = (raw: RawClient["server.shell"]) => (input: ShellCre
   preserveEffect<ShellCreateOutput>()(
     raw["shell.create"]({
       query: { location: input["location"] },
-      payload: { command: input["command"], cwd: input["cwd"], timeout: input["timeout"], metadata: input["metadata"] },
+      payload: {
+        command: input["command"],
+        cwd: input["cwd"],
+        timeout: input["timeout"],
+        queueTimeout: input["queueTimeout"],
+        background: input["background"],
+        metadata: input["metadata"],
+      },
     }).pipe(Effect.mapError(mapClientError)),
   )
 

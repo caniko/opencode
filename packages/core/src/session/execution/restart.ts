@@ -102,15 +102,14 @@ export const layer = (options?: Options) =>
         background: Job.Background,
         recovery: Extract<Job.Recovery, { kind: "shell" }>,
       ) {
-        const state = background.status === "running" ? "cancelled" : background.status
-        const text =
-          background.status === "running"
-            ? "Command cancelled because the server restarted"
-            : state === "completed"
-              ? (background.output ?? "Command completed")
-              : state === "error"
-                ? (background.error ?? "Command failed")
-                : "Command cancelled"
+        const state = Job.isActive(background.status) ? "error" : background.status
+        const text = Job.isActive(background.status)
+          ? "The server restarted; this command's execution outcome is unknown. It will not be replayed automatically. Inspect native execution and any side effects before retrying."
+          : state === "completed"
+            ? (background.output ?? "Command completed")
+            : state === "error"
+              ? (background.error ?? "Command failed")
+              : "Command cancelled"
 
         yield* sessions
           .synthetic({
@@ -207,11 +206,20 @@ export const layer = (options?: Options) =>
             // Admit shell outcomes before a recovered child can start its first model request.
             pending.toSorted((a, b) => Number(a.recovery.kind === "subagent") - Number(b.recovery.kind === "subagent")),
             Effect.fnUntraced(function* (background) {
-              if ((yield* jobs.get(background.id))?.status === "running") return
+              const current = yield* jobs.get(background.id)
+              if (current && Job.isActive(current.status)) return
               const recovery = background.recovery
               yield* recovery.kind === "shell"
                 ? recoverShell(background, recovery)
-                : recoverSubagent(background, recovery, suspended)
+                : recoverSubagent(background, recovery, suspended).pipe(
+                    // Keep the durable marker, rather than dropping an accepted
+                    // recovery or preventing independent Sessions from starting.
+                    Effect.catchTag("Job.CapacityError", () =>
+                      Effect.logWarning("Background recovery deferred: job capacity exhausted", {
+                        jobID: background.id,
+                      }),
+                    ),
+                  )
             }),
             { discard: true },
           )

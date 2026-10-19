@@ -1048,7 +1048,8 @@ export function createData(config: CreateDataInput) {
             (item) =>
               item.type === "assistant" &&
               item.content.some(
-                (part) => part.type === "tool" && (part.state.status === "streaming" || part.state.status === "running"),
+                (part) =>
+                  part.type === "tool" && (part.state.status === "streaming" || part.state.status === "running"),
               ),
           )
         ) {
@@ -1243,6 +1244,7 @@ export function createData(config: CreateDataInput) {
         ])
         break
       case "shell.created":
+      case "shell.started":
         setStore("location", locationKey(location), (data) => ({
           shell: {
             ...data?.shell,

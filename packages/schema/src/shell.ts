@@ -19,11 +19,14 @@ export const ID = IDSchema.pipe(
 )
 export type ID = typeof ID.Type
 
-export const Status = Schema.Literals(["running", "exited", "timeout", "killed"])
+export const Status = Schema.Literals(["queued", "running", "exited", "timeout", "killed", "failed"])
 export type Status = typeof Status.Type
 
 export const Time = Schema.Struct({
-  started: Schema.Finite.annotate({ description: "Start time in milliseconds since the Unix epoch" }),
+  queued: optional(Schema.Finite).annotate({ description: "Acceptance time in milliseconds since the Unix epoch" }),
+  started: optional(Schema.Finite).annotate({
+    description: "Execution start time in milliseconds since the Unix epoch; absent while queued",
+  }),
   completed: optional(Schema.Finite).annotate({
     description: "Completion time in milliseconds since the Unix epoch",
   }),
@@ -46,6 +49,7 @@ export const Info = Schema.Struct({
   pid: optional(NonNegativeInt),
   exit: optional(Schema.Finite),
   signal: optional(Schema.String),
+  error: optional(Schema.String),
   // Always present; defaults to an empty object when the creator supplies no metadata.
   metadata: Metadata,
   time: Time,
@@ -53,14 +57,22 @@ export const Info = Schema.Struct({
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 
 const Created = ephemeral({ type: "shell.created", schema: { info: Info } })
+const Started = ephemeral({ type: "shell.started", schema: { info: Info } })
 const Exited = ephemeral({ type: "shell.exited", schema: { id: ID, exit: optional(Schema.Finite), status: Status } })
 const Deleted = ephemeral({ type: "shell.deleted", schema: { id: ID } })
-export const Event = { Created, Exited, Deleted, Definitions: inventory(Created, Exited, Deleted) }
+export const Event = { Created, Started, Exited, Deleted, Definitions: inventory(Created, Started, Exited, Deleted) }
 
 export const CreateInput = Schema.Struct({
   command: Schema.String,
   cwd: optional(Schema.String),
   timeout: optional(NonNegativeInt),
+  queueTimeout: optional(NonNegativeInt).annotate({
+    description:
+      "Optional resource wait limit in milliseconds. Omitted or zero waits until cancelled; does not consume execution timeout.",
+  }),
+  background: optional(Schema.Boolean).annotate({
+    description: "Return the accepted queued handle without waiting for process admission.",
+  }),
   metadata: optional(Metadata),
 })
 export interface CreateInput extends Schema.Schema.Type<typeof CreateInput> {}

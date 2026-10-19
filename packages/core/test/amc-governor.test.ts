@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import path from "node:path"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
-import { Effect, Fiber } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
+import { ChildProcessSpawner } from "effect/unstable/process"
 import { ProcessGovernor } from "@opencode/util/process-governor"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Config } from "@opencode/core/config"
@@ -86,7 +87,7 @@ test("V2 shell diagnostics execute while admission waits time out or cancel", as
         })
         yield* Fiber.interrupt(pending)
         const error = yield* shell
-          .create({ shell: "sh", command: "amc admission exec --contract tool -- true", timeout: 50 })
+          .create({ shell: "sh", command: "amc admission exec --contract tool -- true", queueTimeout: 50 })
           .pipe(Effect.flip, Effect.timeout("2 seconds"))
         expect(error.message).toContain("Timed out waiting for process governor")
         expect((yield* ProcessGovernor.status()).heavy.queued).toBe(0)
@@ -100,6 +101,93 @@ test("V2 shell diagnostics execute while admission waits time out or cancel", as
           ]),
         ),
       ),
+    ),
+  )
+}, 10000)
+
+test("queued shells have a cancellable handle and queue waits do not spend execution time", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const shell = yield* Shell.Service
+        const leases = yield* Effect.forEach(Array.from({ length: 6 }), () => ProcessGovernor.acquire("ordinary"))
+        yield* Effect.addFinalizer(() => Effect.forEach(leases, (lease) => lease.release))
+        const queued = yield* shell.create({ shell: "sh", command: "printf admitted", timeout: 500, background: true })
+        expect(queued).toMatchObject({ status: "queued" })
+        expect(queued.time.started).toBeUndefined()
+        expect(queued.time.queued).toBeNumber()
+        expect((yield* shell.list()).map((entry) => entry.id)).toContain(queued.id)
+        expect(yield* shell.output(queued.id)).toMatchObject({ output: "", size: 0 })
+        yield* Effect.sleep("550 millis")
+        expect((yield* shell.get(queued.id)).status).toBe("queued")
+        const cancelled = yield* shell.create({ shell: "sh", command: "printf must-not-run", background: true })
+        yield* shell.remove(cancelled.id)
+        expect((yield* shell.list()).map((entry) => entry.id)).not.toContain(cancelled.id)
+        yield* Effect.forEach(leases, (lease) => lease.release)
+        const result = yield* shell.result(queued).pipe(Effect.timeout("3 seconds"))
+        expect(result).toMatchObject({ info: { status: "exited", exit: 0 }, capture: { output: "admitted" } })
+        expect(result.info.time.started).toBeGreaterThan(queued.time.queued ?? 0)
+      }).pipe(
+        Effect.provide(
+          AppNodeBuilder.build(Shell.node, [
+            Location.node.replace(tempLocationLayer),
+            Global.node.replace(tempGlobalLayer),
+            Config.node.replace(Config.testLayer()),
+            Environment.node.replace(hostEnvironmentLayer),
+          ]),
+        ),
+      ),
+    ),
+  )
+}, 10000)
+
+test("shell completion waits for native process scope cleanup", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cleaning = yield* Deferred.make<void>()
+        const cleaned = yield* Deferred.make<void>()
+        const environment = Layer.effect(
+          Environment.Service,
+          Effect.gen(function* () {
+            const host = yield* Environment.Service
+            return Environment.Service.of({
+              ...host,
+              spawner: ChildProcessSpawner.make((command) =>
+                host.spawner
+                  .spawn(command)
+                  .pipe(
+                    Effect.tap(() =>
+                      Effect.addFinalizer(() =>
+                        Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(cleaned))),
+                      ),
+                    ),
+                  ),
+              ),
+            })
+          }),
+        ).pipe(Layer.provide(hostEnvironmentLayer))
+        yield* Effect.gen(function* () {
+          const shell = yield* Shell.Service
+          const info = yield* shell.create({ shell: "sh", command: "printf finished" })
+          yield* Deferred.await(cleaning)
+          yield* shell.wait(info.id).pipe(
+            Effect.timeoutOption("20 millis"),
+            Effect.tap((result) => Effect.sync(() => expect(result._tag).toBe("None"))),
+            Effect.ensuring(Deferred.succeed(cleaned, undefined)),
+          )
+          expect(yield* shell.wait(info.id)).toMatchObject({ status: "exited", exit: 0 })
+        }).pipe(
+          Effect.provide(
+            AppNodeBuilder.build(Shell.node, [
+              Location.node.replace(tempLocationLayer),
+              Global.node.replace(tempGlobalLayer),
+              Config.node.replace(Config.testLayer()),
+              Environment.node.replace(environment),
+            ]),
+          ),
+        )
+      }),
     ),
   )
 }, 10000)

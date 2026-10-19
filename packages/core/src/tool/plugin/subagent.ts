@@ -224,7 +224,13 @@ export const Plugin = {
                 agent: agent.name,
                 description: input.description,
               }
-              yield* subagents.start(recovery)
+              yield* subagents
+                .start(recovery)
+                .pipe(
+                  Effect.mapError(
+                    (error) => new ToolFailure({ message: `Unable to start subagent (sessionID: ${child.id})`, error }),
+                  ),
+                )
 
               if (background) {
                 yield* subagents.background(recovery)

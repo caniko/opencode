@@ -2180,6 +2180,8 @@ export type ShellCreateInput = {
   readonly command: string
   readonly cwd?: string | undefined
   readonly timeout?: number | undefined
+  readonly queueTimeout?: number | undefined
+  readonly background?: boolean | undefined
   readonly metadata?: { readonly [x: string]: unknown } | undefined
 }
 export type ShellCreateOutput = { readonly location: Location.PublicRef; readonly data: Shell.Info }

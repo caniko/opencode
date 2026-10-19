@@ -1926,6 +1926,8 @@ export function make(options: ClientOptions) {
               command: input["command"],
               cwd: input["cwd"],
               timeout: input["timeout"],
+              queueTimeout: input["queueTimeout"],
+              background: input["background"],
               metadata: input["metadata"],
             },
             successStatus: 200,

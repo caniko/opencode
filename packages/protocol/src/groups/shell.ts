@@ -15,8 +15,8 @@ export const ShellGroup = HttpApiGroup.make("server.shell")
       .annotateMerge(
         OpenApi.annotations({
           identifier: "shell.list",
-          summary: "List running shell commands",
-          description: "List currently running shell commands for a location. Exited commands are not included.",
+          summary: "List active shell commands",
+          description: "List queued and running shell commands for a location. Terminal commands are not included.",
         }),
       ),
   )
@@ -32,7 +32,7 @@ export const ShellGroup = HttpApiGroup.make("server.shell")
           identifier: "shell.create",
           summary: "Run shell command",
           description:
-            "Spawn one non-interactive shell command for a location. Combined stdout/stderr is captured to a file pageable via output.",
+            "Accept one non-interactive shell command for a location. Background requests return a queued handle before resource admission. Queue waiting does not consume execution timeout. Combined stdout/stderr is captured to a file pageable via output.",
         }),
       ),
   )
@@ -83,6 +83,4 @@ export const ShellGroup = HttpApiGroup.make("server.shell")
         }),
       ),
   )
-  .annotateMerge(
-    OpenApi.annotations({ title: "shell", description: "Location-scoped shell command routes." }),
-  )
+  .annotateMerge(OpenApi.annotations({ title: "shell", description: "Location-scoped shell command routes." }))
