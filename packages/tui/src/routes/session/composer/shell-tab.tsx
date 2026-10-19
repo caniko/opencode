@@ -18,7 +18,9 @@ export function ShellTab(props: { sessionID: string }) {
   const dialog = useDialog()
 
   const entries = createMemo(() =>
-    data.shell.listBySession(props.sessionID).filter((shell) => shell.status === "running"),
+    data.shell
+      .listBySession(props.sessionID)
+      .filter((shell) => shell.status === "queued" || shell.status === "running"),
   )
 
   const [store, setStore] = createStore({ selected: 0 })
@@ -136,6 +138,7 @@ export function ShellTab(props: { sessionID: string }) {
                     attributes={active() ? TextAttributes.BOLD : undefined}
                     wrapMode="none"
                   >
+                    {shell.status === "queued" ? "[Queued] " : ""}
                     {shell.command.split("\n", 1)[0]}
                   </text>
                 </box>

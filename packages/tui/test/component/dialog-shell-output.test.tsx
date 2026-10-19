@@ -18,7 +18,7 @@ import { createApi, createEventStream, createFetch, json } from "../fixture/tui-
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 
-async function setup(width: number, output = "") {
+async function setup(width: number, output = "", status: ShellInfo["status"] = "running") {
   const temporary = await tmpdir()
   const location = { directory: `${temporary.path}/original` }
   const shell: ShellInfo = {
@@ -27,9 +27,9 @@ async function setup(width: number, output = "") {
     cwd: location.directory,
     shell: "/bin/sh",
     file: `${temporary.path}/capture.out`,
-    status: "running",
+    status,
     metadata: { sessionID: "ses_fixture" },
-    time: { started: 0 },
+    time: status === "queued" ? { queued: 0 } : { started: 0 },
   }
   const state = { output, missing: false, failure: false }
   const requests: { url: URL; method: string }[] = []
@@ -39,6 +39,7 @@ async function setup(width: number, output = "") {
     createFetch((url, request) => {
       if (!url.pathname.startsWith("/api/shell")) return undefined
       requests.push({ url, method: request.method })
+      if (request.method === "DELETE") return new Response(null, { status: 204 })
       if (url.pathname === "/api/shell") return envelope([shell])
       if (state.missing)
         return json({ _tag: "ShellNotFoundError", id: shell.id, message: "Shell not found" }, { status: 404 })
@@ -88,7 +89,9 @@ async function setup(width: number, output = "") {
     { width, height: 30, kittyKeyboard: true },
   )
   app.renderer.start()
-  await app.waitForFrame((frame) => frame.includes(shell.command))
+  await app.waitForFrame((frame) =>
+    frame.includes(status === "queued" ? `[Queued] ${shell.command.slice(0, 15)}` : shell.command),
+  )
   return {
     ...app,
     state,
@@ -102,6 +105,42 @@ async function setup(width: number, output = "") {
     },
   }
 }
+
+test.each([40, 100])(
+  "queued shells stay visible and their output follows startup and failure at %s columns",
+  async (width) => {
+    await using app = await setup(width, "", "queued")
+    expect(app.captureCharFrame()).toContain("Queued")
+    app.mockInput.pressEnter()
+    await app.waitForFrame((frame) => frame.includes("Shell output") && frame.includes("Queued"))
+    expect(app.captureCharFrame()).not.toContain("Exited")
+    app.shell.status = "running"
+    app.shell.time.started = 1
+    app.state.output = "Work started\n"
+    app.events.emit({
+      id: "evt_start",
+      created: 1,
+      type: "shell.started",
+      location: app.location,
+      data: { info: app.shell },
+    })
+    await app.waitForFrame((frame) => frame.includes("Running") && frame.includes("Work started"), { maxPasses: 150 })
+    app.shell.status = "failed"
+    app.shell.error = "Native admission unavailable"
+    await app.waitForFrame((frame) => frame.includes("Failed") && frame.includes("Native admission unavailable"), {
+      maxPasses: 150,
+    })
+  },
+)
+
+test("queued shells retain keyboard cancellation before startup", async () => {
+  await using app = await setup(100, "", "queued")
+  app.mockInput.pressKey("d", { ctrl: true })
+  await app.waitFor(() => app.requests.some((request) => request.method === "DELETE"))
+  expect(app.requests.find((request) => request.method === "DELETE")?.url.searchParams.get("location[directory]")).toBe(
+    app.location.directory,
+  )
+})
 
 test.each([40, 100])("shell output opens, follows, scrolls, and survives exit at %s columns", async (width) => {
   await using app = await setup(width, Array.from({ length: 50 }, (_, i) => `Frame ${i + 1}\n`).join(""))
