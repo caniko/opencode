@@ -25,12 +25,19 @@
   in {
     homeModules.browser-connection = import ./nix/home-manager.nix {toolbelt = canix-toolbelt;};
     homeManagerModules.browser-connection = self.homeModules.browser-connection;
-    checks = forEachSystem (pkgs: {
-      browser-connection = import ./nix/browser-connection-eval.nix {
-        inherit pkgs;
-        toolbelt = canix-toolbelt;
-      };
-    });
+    checks = forEachSystem (pkgs:
+      {
+        browser-connection = import ./nix/browser-connection-eval.nix {
+          inherit pkgs;
+          toolbelt = canix-toolbelt;
+        };
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        managed-execution = pkgs.callPackage ./nix/managed-execution.nix {
+          bun = pkgs.callPackage ./nix/bun.nix {};
+          node_modules = self.packages.${pkgs.stdenv.hostPlatform.system}.opencode.node_modules;
+        };
+      });
     devShells = forEachSystem (pkgs: {
       default = pkgs.mkShell {
         packages = with pkgs;

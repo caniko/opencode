@@ -17,14 +17,97 @@ concurrency:
 permissions:
   contents: read
   checks: write
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  managed-execution:
+    name: exact-head managed execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind attempt and actual runtime
+        env:
+          CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          mkdir -p "$RUNNER_TEMP/managed-execution"
+          git rev-parse HEAD > "$RUNNER_TEMP/managed-execution/revision"
+          uname -a > "$RUNNER_TEMP/managed-execution/host"
+          cp /etc/os-release "$RUNNER_TEMP/managed-execution/os-release"
+          env | grep -E '^(GITHUB_RUN_ID|GITHUB_RUN_ATTEMPT|GITHUB_WORKFLOW_REF|GITHUB_WORKFLOW_SHA|RUNNER_ENVIRONMENT|RUNNER_OS|RUNNER_ARCH|ImageOS|ImageVersion)=' | sort > "$RUNNER_TEMP/managed-execution/runner"
+          cp "$GITHUB_EVENT_PATH" "$RUNNER_TEMP/managed-execution/event.json"
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+      - name: Execute owned lifecycle and authenticated boundaries once
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/managed-execution"
+          bun --version > "$EVIDENCE/bun-version"
+          node --version > "$EVIDENCE/node-version"
+          sha256sum "$(command -v bun)" "$(command -v node)" bun.lock flake.lock > "$EVIDENCE/runtime.sha256"
+          cd packages/core
+          bun run script/test.ts --retry 0 --reporter junit --reporter-outfile "$EVIDENCE/core.xml" test/session-external.test.ts test/session-execution.test.ts test/session-environment.test.ts test/v1-migration.test.ts test/session-create.test.ts 2>&1 | tee "$EVIDENCE/core.log"
+          cd ../cli
+          bun test --retry 0 --reporter junit --reporter-outfile "$EVIDENCE/cli.xml" test/service-readiness.test.ts test/session-external.test.ts 2>&1 | tee "$EVIDENCE/cli.log"
+          cd ../server
+          bun test --retry 0 --reporter junit --reporter-outfile "$EVIDENCE/server.xml" test/session-external.test.ts 2>&1 | tee "$EVIDENCE/server.log"
+          cd ../client
+          bun run check:generated 2>&1 | tee "$EVIDENCE/generated.log"
+          cd ../..
+          for report in "$EVIDENCE/core.xml" "$EVIDENCE/cli.xml" "$EVIDENCE/server.xml"; do
+            test -s "$report"
+            grep -q '<testcase' "$report"
+          done
+          ! grep -E ' (failures|errors|skipped)="[1-9][0-9]*"|<(skipped|failure|error|rerunFailure|flakyFailure)([ />])' "$EVIDENCE/"*.xml
+      - name: Seal original reports and logs
+        if: always()
+        run: |
+          cd "$RUNNER_TEMP/managed-execution"
+          sha256sum revision host os-release runner event.json *-version *.xml *.log runtime.sha256 > members.sha256
+      - name: Retain source-bound lifecycle evidence
+        id: evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: managed-execution-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/managed-execution/
+          retention-days: 31
+          if-no-files-found: error
+      - name: Verify actual provider retention and archive digest
+        if: always() && steps.evidence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.evidence.outputs.artifact-digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
+          node --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { readFileSync } from "node:fs";
+            const artifact = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/artifact.json", "utf8"));
+            assert.equal(artifact.expired, false);
+            assert.equal(artifact.digest, "sha256:" + process.env.ARTIFACT_DIGEST);
+            assert.ok(Date.parse(artifact.expires_at) - Date.parse(artifact.created_at) >= 2592000000);
+            console.log(JSON.stringify(artifact));
+          '
+
   affected:
     name: affected packages
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       app: ${{ steps.packages.outputs.app }}
     steps:
@@ -59,9 +142,9 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -179,9 +262,9 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     env:
       E2E_ENABLED: ${{ needs.affected.outputs.app == 'true' && github.ref_name != 'v2' && github.head_ref != 'v2' }}
