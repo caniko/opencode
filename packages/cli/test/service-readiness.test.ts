@@ -55,7 +55,9 @@ test("a changed endpoint stops the server and preserves unrelated configuration"
       Effect.provide(NodeFileSystem.layer),
     ),
   )
-  expect(await owner.exited).toBe(0)
+  // Windows terminates the process unconditionally when it receives SIGTERM.
+  expect(await owner.exited).toBe(process.platform === "win32" ? 1 : 0)
+  expect(await Bun.file(join(fixture.directory, ServiceConfig.filename())).exists()).toBe(false)
   expect(await Bun.file(config).json()).toEqual({ port: 4098, password: "private", env: { OTHER: "preserved" } })
 })
 

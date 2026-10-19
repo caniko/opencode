@@ -164,6 +164,18 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      - name: Provision native search dependency
+        run: |
+          if ! command -v rg >/dev/null; then
+            if [ "$RUNNER_OS" = Windows ]; then
+              choco install ripgrep --version=15.1.0 --yes --no-progress
+            else
+              sudo apt-get update
+              sudo apt-get install --yes ripgrep
+            fi
+          fi
+          rg --version
+
       - name: Test Effect simplification rules
         if: runner.os == 'Linux'
         run: bun run test:effect-simplification-rules
@@ -189,12 +201,15 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
-          # The runners have four vCPUs, and each Bun test process performs its own concurrent work.
+          # Each Bun test process already runs concurrent work. Serialize native
+          # Windows suites so Git/process fixtures retain their original deadlines.
+          concurrency=3
+          if [ "$RUNNER_OS" = Windows ]; then concurrency=1; fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            GITHUB_ACTIONS=false bun turbo test --concurrency=3
+            GITHUB_ACTIONS=false bun turbo test --concurrency="$concurrency"
             exit 0
           fi
-          GITHUB_ACTIONS=false bun turbo test --affected --concurrency=3
+          GITHUB_ACTIONS=false bun turbo test --affected --concurrency="$concurrency"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
