@@ -1,0 +1,4 @@
+[formatter.prettier]
+command = "./node_modules/.bin/prettier"
+options = ["--write"]
+includes = ["*.ts", "*.tsx"]

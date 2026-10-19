@@ -311,6 +311,11 @@ function limit(key: string, fallback: number, max?: number) {
 }
 
 function runtimeRoot() {
+  const configured = process.env.OPENCODE_TOOL_GOVERNOR_DIRECTORY
+  if (configured !== undefined) {
+    if (!path.isAbsolute(configured)) throw new Error("OPENCODE_TOOL_GOVERNOR_DIRECTORY must be absolute")
+    return configured
+  }
   const uid = process.getuid?.()
   const systemd = uid === undefined ? undefined : `/run/user/${uid}`
   const base = systemd && existsSync(systemd) ? systemd : path.join(os.tmpdir(), `opencode-${uid ?? "user"}`)
