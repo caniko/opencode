@@ -35,6 +35,24 @@ export const discover = Effect.fn("service.discover")(function* (options: Discov
   return found.endpoint
 })
 
+/** Wait for a supervisor-owned process without starting, stopping or replacing a service. */
+export const wait = Effect.fn("service.wait")(function* (
+  options: DiscoverOptions & { readonly pid: number; readonly timeout: number },
+) {
+  return yield* Effect.gen(function* () {
+    const found = (yield* registered(options.file)).service
+    if (found?.state !== "ready" || !found.compatible || found.info.pid !== options.pid) return undefined
+    if (!matchesVersion(found.version, options)) return undefined
+    return found.endpoint
+  }).pipe(
+    Effect.repeat({ until: (endpoint) => endpoint !== undefined, schedule: Schedule.spaced("100 millis") }),
+    Effect.timeoutOrElse({
+      duration: options.timeout,
+      orElse: () => Effect.fail(new Error(`Timed out waiting for background service PID ${options.pid} to be ready`)),
+    }),
+  )
+})
+
 /** Recognize an authenticated compatible service bound to an expected URL, including while it starts or fails. */
 export const incumbent = Effect.fn("service.incumbent")(function* (
   options: DiscoverOptions & { readonly url: string },
@@ -304,4 +322,4 @@ const terminate = Effect.fnUntraced(function* (info: Info, options: { readonly f
 })
 
 /** Effect-based local service lifecycle operations. */
-export const Service = { discover, incumbent, ensure, stop, headers, Info }
+export const Service = { discover, wait, incumbent, ensure, stop, headers, Info }

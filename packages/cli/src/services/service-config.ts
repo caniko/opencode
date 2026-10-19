@@ -188,14 +188,17 @@ export const set = Effect.fn("cli.service-config.set")(function* (key: string, v
   const selected = configKey(key)
   if (selected !== "env" && nestedValue !== undefined)
     throw new Error(`Usage: opencode service set ${selected} <value>`)
+  const existing = yield* read()
   switch (selected) {
     case "disabled": {
       if (value !== "true" && value !== "false") throw new Error("Disabled must be true or false")
+      if ((existing.disabled ?? false) === (value === "true")) return
       if (value === "true") yield* Service.stop(yield* options())
       yield* write({ ...(yield* read()), disabled: value === "true" })
       return
     }
     case "hostname": {
+      if (existing.hostname === value) return
       yield* Service.stop(yield* options())
       yield* write({ ...(yield* read()), hostname: value })
       return
@@ -203,20 +206,23 @@ export const set = Effect.fn("cli.service-config.set")(function* (key: string, v
     case "port": {
       const port = Number(value)
       if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Port must be between 1 and 65535")
+      if (existing.port === port) return
       yield* Service.stop(yield* options())
       yield* write({ ...(yield* read()), port })
       return
     }
     case "password": {
+      if (existing.password === value) return
       yield* Service.stop(yield* options())
       yield* password(value)
       return
     }
     case "env": {
       if (nestedValue === undefined) throw new Error("Usage: opencode service set env <key> <value>")
+      if (existing.env?.[value] === nestedValue) return
       yield* Service.stop(yield* options())
-      const existing = yield* read()
-      yield* write({ ...existing, env: { ...existing.env, [value]: nestedValue } })
+      const current = yield* read()
+      yield* write({ ...current, env: { ...current.env, [value]: nestedValue } })
       return
     }
     case "cors": {
@@ -228,6 +234,7 @@ export const set = Effect.fn("cli.service-config.set")(function* (key: string, v
         })
       )
         throw new Error("CORS must be a comma-separated list of HTTP(S) origins without paths or trailing slashes")
+      if (JSON.stringify(existing.cors ?? []) === JSON.stringify(cors)) return
       yield* Service.stop(yield* options())
       yield* write({ ...(yield* read()), cors })
       return
