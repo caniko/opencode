@@ -207,10 +207,9 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
-          # Each Bun test process already runs concurrent work. Serialize native
-          # Windows suites so Git/process fixtures retain their original deadlines.
-          concurrency=3
-          if [ "$RUNNER_OS" = Windows ]; then concurrency=1; fi
+          # Each Bun test process already runs concurrent work. Serialize package
+          # suites on both hosts so process fixtures retain their original deadlines.
+          concurrency=1
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             GITHUB_ACTIONS=false bun turbo test --concurrency="$concurrency"
             exit 0
