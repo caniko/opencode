@@ -13,3 +13,6 @@ cores = 2
 timeout_minutes = 60
 capture_results = true
 artifact_retention_days = 31
+extra_setup = [
+  "nix run github:caniko/simit/7d6783ab1a99fb675b273e214df77d378e6735ab -- init ci --platform github --ci-provider actions --runtime nix --check --diff",
+]
