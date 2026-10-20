@@ -528,6 +528,7 @@ jobs:
         with:
           name: diagnostic-timeline-${{ inputs.source_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: timeline-benchmark/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 31
       - name: Verify actual provider retention and archive digest
