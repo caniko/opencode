@@ -60,3 +60,10 @@ test("other rules keep whole-resource matching and last-match precedence", () =>
     Permission.evaluate("shell", "canix --output=json workspace update --project nix-theme-broker", rules).effect,
   ).toBe("ask")
 })
+
+test("assignment twins never allow PowerShell or cmd commands named NAME=value", () => {
+  const command = "FOO=bar canix workspace update plan"
+  expect(Permission.evaluate("shell", command, rules).effect).toBe("allow")
+  expect(Permission.evaluateWith("shell", command, [rules], { posix: false }).effect).toBe("ask")
+  expect(Permission.evaluateWith("shell", "FOO=bar nix-build .", [rules], { posix: false }).effect).toBe("deny")
+})
