@@ -1881,6 +1881,62 @@ describe("ShellTool", () => {
     ),
   )
 
+  for (const proof of ["matching", "missing"] as const)
+    it.live(`settles an entered background command only with ${proof} completion proof`, () =>
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+        const tmp = yield* tmpdirScoped()
+        reset()
+        yield* withSession(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const bus = yield* Bus.Service
+            const jobs = yield* Job.Service
+            const hooks = yield* PluginHooks.Service
+            yield* hooks.register("shell", "create.before", (event) =>
+              Effect.sync(() => {
+                event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+                event.command = `printf '\\036%s\\037' "$OPENCODE_SHELL_START_TOKEN" >&2; printf entered; ${
+                  proof === "matching" ? `printf '\\036%s:complete:7\\037' "$OPENCODE_SHELL_START_TOKEN" >&2; ` : ""
+                }exit 7`
+              }),
+            )
+            const notification = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+              Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+              Stream.runHead,
+              Effect.forkScoped({ startImmediately: true }),
+            )
+            const result = yield* executeTool(
+              registry,
+              call({ command: "amc admission exec --contract tool -- true", background: true }, `call-proof-${proof}`),
+            )
+            const id = String(result.metadata?.shellID)
+            const item = (yield* Fiber.join(notification)).valueOrUndefined?.data.item
+            const payload = item?.type === "synthetic" ? item.payload : undefined
+            const job = yield* jobs.get(id)
+            // Delivery acknowledges the notice; it never removes an unresolved accepted intent.
+            yield* jobs.pendingBackground.pipe(
+              Effect.repeat({
+                until: (entries) => !entries.some((entry) => entry.id === id),
+                schedule: Schedule.spaced("5 millis"),
+              }),
+              Effect.timeout("2 seconds"),
+            )
+            if (proof === "matching") {
+              expect(payload).toMatchObject({ metadata: { shellID: id, state: "completed", exit: 7 } })
+              expect(job).toMatchObject({ status: "completed", completed_at: expect.any(Number) })
+              return
+            }
+            // Plain checks: asymmetric matchers would be written into the shared event payload.
+            expect(payload?.text).toContain("completion was not proven")
+            expect(payload?.metadata).toMatchObject({ shellID: id, state: "reconciling" })
+            expect(job).toMatchObject({ status: "reconciling", executed_at: expect.any(Number) })
+            expect(job?.completed_at).toBeUndefined()
+            expect(yield* jobs.get(id)).toMatchObject({ status: "reconciling" })
+          }),
+        ).pipe(Effect.ensuring(Effect.sync(reset)))
+      }),
+    )
+
   it.live("persists a silent command that finishes before backgrounding", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

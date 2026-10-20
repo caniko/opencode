@@ -189,7 +189,7 @@ export const Plugin = {
         const output = info.status === "completed" ? yield* Deferred.await(settled) : undefined
         const text = output
           ? resultMessages(output).join("\n\n")
-          : info.status === "error"
+          : info.status === "error" || info.status === "reconciling"
             ? (info.error ?? "Command failed")
             : "Cancelled"
         yield* sessions.synthetic({
@@ -286,6 +286,8 @@ export const Plugin = {
                     yield* shell.started(info.id)
                     yield* started
                     const result = yield* shell.result(info)
+                    if (result.reconciling)
+                      return yield* new Job.ReconcilingError({ message: result.info.error ?? Shell.RECONCILING })
                     if (!result.capture) return yield* new Shell.NotFoundError({ id: info.id })
                     const output = ShellResult.output(result)
                     return {
@@ -351,7 +353,7 @@ export const Plugin = {
                 return backgroundResult(info.id, info.file, result.info.status === "queued")
               }
               if (job.notificationID) yield* jobs.completeBackground(job.notificationID)
-              if (result?.info.status === "error")
+              if (result?.info.status === "error" || result?.info.status === "reconciling")
                 return yield* Effect.fail(new Error(result.info.error ?? "Command failed"))
               if (result?.info.status === "cancelled") return yield* Effect.fail(new Error("Command cancelled"))
 

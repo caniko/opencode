@@ -35,6 +35,8 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Shell.No
 const EXITED_LIMIT = 25
 export const RETENTION = Duration.days(7)
 export const DIRECTORY = "shell"
+export const RECONCILING =
+  "Native workload completion was not proven; the outcome is reconciling and will not be replayed automatically. Inspect native execution and any side effects before retrying."
 
 type Info = Shell.Info
 type CreateInput = Shell.CreateInput & {
@@ -60,6 +62,8 @@ type Active = {
   stop?: Effect.Effect<void>
   timeoutFiber?: Fiber.Fiber<void>
   timeout?: (duration: number) => Effect.Effect<void>
+  // Entered native work exited without matching completion proof.
+  reconciling?: boolean
 }
 
 /**
@@ -279,7 +283,7 @@ const layer = () =>
             : ""
           return { output: `${text || "(no output)"}${notice}`, truncated }
         }).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
-        return { info, capture }
+        return { info, capture, ...(commands.get(info.id)?.reconciling ? { reconciling: true as const } : {}) }
       })
 
       const create = Effect.fn("Shell.create")(function* <E = never, R = never>(
@@ -416,6 +420,9 @@ const layer = () =>
                       invocation.env.OPENCODE_SHELL_START_TOKEN = startToken
                       const marker = startToken ? Buffer.from(`\x1e${startToken}\x1f`) : undefined
                       const backpressure = startToken ? Buffer.from(`\x1e${startToken}:backpressure:`) : undefined
+                      const complete = startToken ? Buffer.from(`\x1e${startToken}:complete:`) : undefined
+                      // Every token-bound completion frame seen after entry; settlement requires exactly one.
+                      const completions: string[] = []
                       let retryAfterMs: number | undefined
                       const nativeStarted = Deferred.makeUnsafe<void>()
                       const handle = yield* environment.spawner
@@ -458,32 +465,68 @@ const layer = () =>
                             handle.stderr.pipe(
                               Stream.mapEffect((chunk) =>
                                 Effect.gen(function* () {
-                                  if (notified) return chunk
-                                  const data = Buffer.concat([pending, chunk])
-                                  const index = data.indexOf(marker)
-                                  if (index !== -1) {
-                                    pending = Buffer.alloc(0)
+                                  let data = Buffer.concat([pending, chunk])
+                                  pending = Buffer.alloc(0)
+                                  // Proof counts only after the entry marker, never before it.
+                                  let entry = 0
+                                  if (!notified) {
+                                    const index = data.indexOf(marker)
+                                    if (index === -1) {
+                                      const rejected = data.indexOf(backpressure!)
+                                      const end =
+                                        rejected === -1 ? -1 : data.indexOf(31, rejected + backpressure!.length)
+                                      if (end !== -1) {
+                                        const delay = data
+                                          .subarray(rejected + backpressure!.length, end)
+                                          .toString("utf8")
+                                        if (/^[0-9]{1,5}$/.test(delay) && Number(delay) > 0 && Number(delay) <= 60000) {
+                                          retryAfterMs = Number(delay)
+                                          return Buffer.concat([data.subarray(0, rejected), data.subarray(end + 1)])
+                                        }
+                                      }
+                                      // Retain only a possible split frame, never the whole output.
+                                      const held = Math.min(data.length, backpressure!.length + 5)
+                                      pending = data.subarray(data.length - held)
+                                      return data.subarray(0, data.length - held)
+                                    }
                                     notified = true
                                     yield* Deferred.succeed(nativeStarted, undefined)
-                                    return Buffer.concat([
+                                    data = Buffer.concat([
                                       data.subarray(0, index),
                                       data.subarray(index + marker.length),
                                     ])
+                                    entry = index
                                   }
-                                  const rejected = data.indexOf(backpressure!)
-                                  const end = rejected === -1 ? -1 : data.indexOf(31, rejected + backpressure!.length)
-                                  if (end !== -1) {
-                                    const delay = data.subarray(rejected + backpressure!.length, end).toString("utf8")
-                                    if (/^[0-9]{1,5}$/.test(delay) && Number(delay) > 0 && Number(delay) <= 60000) {
-                                      retryAfterMs = Number(delay)
-                                      pending = Buffer.alloc(0)
-                                      return Buffer.concat([data.subarray(0, rejected), data.subarray(end + 1)])
+                                  // After entry, strip completion proof (at most three exit digits).
+                                  // A malformed frame is recorded so it can never settle the result.
+                                  const kept: Buffer[] = []
+                                  let from = 0
+                                  for (let index = data.indexOf(complete!, entry); index !== -1; ) {
+                                    const body = index + complete!.length
+                                    const end = data.subarray(body, body + 4).indexOf(31)
+                                    if (end === -1 && data.length - body < 4) {
+                                      kept.push(data.subarray(from, index))
+                                      pending = data.subarray(index)
+                                      return Buffer.concat(kept)
                                     }
+                                    if (end === -1) completions.push("malformed")
+                                    else {
+                                      completions.push(data.subarray(body, body + end).toString("utf8"))
+                                      kept.push(data.subarray(from, index))
+                                      from = body + end + 1
+                                    }
+                                    index = data.indexOf(complete!, end === -1 ? body : from)
                                   }
-                                  // Retain only a possible split frame, never the whole output.
-                                  const held = Math.min(data.length, backpressure!.length + 5)
-                                  pending = data.subarray(data.length - held)
-                                  return data.subarray(0, data.length - held)
+                                  // Hold back a trailing partial frame prefix until the next chunk.
+                                  const split = data.lastIndexOf(30)
+                                  const tail =
+                                    split >= from &&
+                                    complete!.subarray(0, data.length - split).equals(data.subarray(split))
+                                      ? split
+                                      : data.length
+                                  kept.push(data.subarray(from, tail))
+                                  pending = data.subarray(tail)
+                                  return Buffer.concat(kept)
                                 }),
                               ),
                             ),
@@ -615,7 +658,27 @@ const layer = () =>
                       yield* Deferred.succeed(command.started, command.info)
                       // Hold the handle's scope open until the command terminates; closing it earlier would
                       // release (kill) the process before its exit is observed.
-                      return { ...command.info, ...(yield* Deferred.await(finished)) }
+                      const final = yield* Deferred.await(finished)
+                      // An adapter exit is not workload evidence: an entered exit settles only
+                      // with exactly one token-bound completion proof for the same code.
+                      if (
+                        marker &&
+                        final.status === "exited" &&
+                        !(
+                          completions.length === 1 &&
+                          /^[0-9]{1,3}$/.test(completions[0]!) &&
+                          Number(completions[0]) === final.exit
+                        )
+                      ) {
+                        command.reconciling = true
+                        return {
+                          ...command.info,
+                          status: "failed" as const,
+                          ...(final.signal !== undefined ? { signal: final.signal } : {}),
+                          error: `${RECONCILING} Adapter ${final.exit !== undefined ? `exit ${final.exit}` : `signal ${final.signal ?? "unknown"}`}, completion proof ${completions.length === 0 ? "missing" : completions.slice(0, 3).join(",")}.`,
+                        }
+                      }
+                      return { ...command.info, ...final }
                     }),
                   )
                   if (outcome.retryAfterMs === undefined) return outcome

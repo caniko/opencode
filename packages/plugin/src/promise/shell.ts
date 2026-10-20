@@ -18,7 +18,9 @@ export interface ShellCreateBefore {
   /** A trusted native adapter can opt into RS/token/US stderr start framing with
    * OPENCODE_SHELL_NOTIFY_START=1. Core supplies a fresh OPENCODE_SHELL_START_TOKEN;
    * emit it only after admission. Until then the shell stays queued without using
-   * its execution timeout. Adapters must not pass the token to nested payloads. */
+   * its execution timeout. After the workload result, emit RS/token:complete:EXIT/US
+   * on stderr and exit with that code; an entered exit without exactly one matching
+   * proof settles as reconciling. Adapters must not pass the token to nested payloads. */
   env: Record<string, string | undefined>
 }
 

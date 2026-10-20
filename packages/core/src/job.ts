@@ -104,6 +104,12 @@ export class CapacityError extends Schema.TaggedError<CapacityError>()("Job.Capa
   }
 }
 
+// Entered work whose outcome is unproven. The job settles as reconciling, without a
+// completion time, and its accepted intent is retained without automatic replay.
+export class ReconcilingError extends Schema.TaggedError<ReconcilingError>()("Job.ReconcilingError", {
+  message: Schema.String,
+}) {}
+
 export type Info = {
   id: string
   type: string
@@ -327,14 +333,16 @@ export const make = Effect.gen(function* () {
           ? "completed"
           : Cause.hasInterruptsOnly(exit.cause)
             ? "cancelled"
-            : "error"
+            : Result.getOrUndefined(Cause.findError(exit.cause)) instanceof ReconcilingError
+              ? "reconciling"
+              : "error"
         const next = {
           ...job,
           blockingSessions: new Map<SessionSchema.ID, number>(),
           info: {
             ...job.info,
             status,
-            completed_at,
+            ...(status === "reconciling" ? {} : { completed_at }),
             ...(Exit.isSuccess(exit) ? { output: exit.value } : {}),
             ...(Exit.isFailure(exit) ? { error: errorText(exit.cause) } : {}),
           },

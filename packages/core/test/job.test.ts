@@ -388,6 +388,57 @@ describe("Job", () => {
     }),
   )
 
+  it.live("settles unproven entered work as reconciling without completion or replay", () =>
+    Effect.gen(function* () {
+      const kv = yield* KV.Service
+      const jobs = yield* Job.Service
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_unproven"),
+        shellID: "sh_unproven",
+        command: "entered side effect",
+        request: {
+          cwd: "/workspace",
+          shell: "/bin/sh",
+          timeout: 100,
+          background: true,
+          environment: "project" as const,
+          messageID: SessionMessage.ID.make("msg_unproven"),
+          toolCallID: "call_unproven",
+        },
+      }
+      const job = yield* jobs.start({
+        id: recovery.shellID,
+        type: "shell",
+        queued: true,
+        recovery,
+        run: (started) => started.pipe(Effect.andThen(new Job.ReconcilingError({ message: "proof missing" }))),
+      })
+      const settled = (yield* jobs.wait({ id: job.id })).info
+      expect(settled).toMatchObject({ status: "reconciling", error: "proof missing" })
+      expect(settled?.executed_at).toBeNumber()
+      expect(settled?.completed_at).toBeUndefined()
+      yield* jobs.completeBackground(job.notificationID!)
+      expect(yield* kv.get(`job.background/${job.notificationID}`)).toMatchObject({
+        recovery,
+        status: "reconciling",
+        notified: true,
+      })
+      expect(
+        ((yield* kv.get(`job.background/${job.notificationID}`)) as { time: Record<string, number> }).time.completed,
+      ).toBeUndefined()
+      expect(
+        yield* jobs.start({
+          id: job.id,
+          type: "shell",
+          queued: true,
+          recovery,
+          run: Effect.die("Unproven work must not be dispatched again"),
+        }),
+      ).toMatchObject({ id: job.id, status: "reconciling" })
+    }),
+  )
+
   it.live("counts acknowledged unresolved requests against the queue bound after restart", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()
