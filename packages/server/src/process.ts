@@ -1,8 +1,7 @@
 export * as ServerProcess from "./process"
 
 import { NodeHttpServer } from "@effect/platform-node"
-import { Bus } from "@opencode/core/bus"
-import { SessionRestart } from "@opencode/core/session/execution/restart"
+import type { SessionRestart } from "@opencode/core/session/execution/restart"
 import { InstallationEvent } from "@opencode/schema/installation-event"
 import { hasPtyConnectTicketURL } from "@opencode/protocol/groups/pty"
 import { hasPersistentPtyConnectTicketURL } from "@opencode/protocol/groups/persistent-pty"
@@ -15,7 +14,6 @@ import { ServerAuth } from "./auth"
 import { isAllowedCorsOrigin } from "./cors"
 import { authorizedRequest, unauthorizedResponse } from "./middleware/authorization"
 import { withoutParentSpan } from "./request-tracing"
-import { createRoutes } from "./routes"
 import { ServerInfo } from "./server-info"
 import { Status } from "./service-status"
 import type { ServerOptions } from "./options"
@@ -91,6 +89,10 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   )
 
   const boot = Effect.gen(function* () {
+    // Bind and expose authenticated startup status before loading the application graph.
+    const { createRoutes } = yield* Effect.promise(() => import("./routes"))
+    const { Bus } = yield* Effect.promise(() => import("@opencode/core/bus"))
+    const { SessionRestart } = yield* Effect.promise(() => import("@opencode/core/session/execution/restart"))
     const context = yield* Layer.buildWithScope(
       createRoutes(
         {
