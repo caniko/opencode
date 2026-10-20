@@ -11,6 +11,8 @@ export default Runtime.handler(Commands.commands.run, (input) =>
       server: Option.getOrUndefined(input.server),
       standalone: input.standalone,
     })
+    // The session-owning client must await backend cleanup before the root
+    // runtime handles the same signal and exits.
     yield* Effect.promise(() =>
       runNonInteractive({
         server,
@@ -26,6 +28,6 @@ export default Runtime.handler(Commands.commands.run, (input) =>
         thinking: input.thinking,
         auto: input.auto || input.yolo || input.dangerouslySkipPermissions,
       }),
-    )
+    ).pipe(Effect.uninterruptible)
   }),
 )

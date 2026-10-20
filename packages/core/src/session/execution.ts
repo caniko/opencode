@@ -116,7 +116,7 @@ export const layer = Layer.effect(
         ),
       drain: (sessionID, force, promotable) => drain(sessionID, force, undefined, promotable),
       // One terminal observation per busy period, covering every coalesced drain.
-      settled: (sessionID, exit, reason) =>
+      settled: (sessionID, exit, reason): Effect.Effect<void> =>
         reportLifecycle(
           sessionID,
           Effect.gen(function* () {
@@ -127,7 +127,23 @@ export const layer = Layer.effect(
             }
             if (outcome.type === "interrupted") {
               // Deliberate stops release the claim; shutdown keeps it for restart continuity.
-              if (outcome.reason !== "shutdown") yield* jobs.cancel(sessionID)
+              if (outcome.reason !== "shutdown") {
+                yield* jobs.cancel(sessionID)
+                // Detached tools may outlive a completed child Session. Stop
+                // every owned queue/producer before publishing cancellation.
+                const owned = new Set([sessionID])
+                for (const parentID of owned) {
+                  for (const child of yield* store.list({ parentID })) owned.add(child.id)
+                }
+                for (const job of yield* jobs.pendingBackground) {
+                  if (!Job.isActive(job.status)) continue
+                  if (job.recovery.kind === "shell" && owned.has(job.recovery.sessionID)) yield* jobs.cancel(job.id)
+                  if (job.recovery.kind === "subagent" && owned.has(job.recovery.parentSessionID)) {
+                    yield* coordinator.interrupt(job.recovery.childSessionID, "user", { awaitSettlement: true })
+                    yield* jobs.cancel(job.id)
+                  }
+                }
+              }
               yield* bus.publish(
                 SessionEvent.Execution.Interrupted,
                 { sessionID, reason: outcome.reason },

@@ -121,8 +121,28 @@ describe("SessionExecution lifecycle", () => {
   it.effect("a user interrupt releases the claim so the turn never resurrects", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
+      const jobs = yield* Job.Service
       const sessionID = Session.ID.make("ses_claim_user_cancel")
+      const child = Session.ID.make("ses_claim_user_cancel_child")
       yield* seedSessions(database, [sessionID])
+      yield* seedSessions(database, [child], { parent_id: sessionID })
+      const queued = yield* jobs.start({
+        type: "shell",
+        queued: true,
+        recovery: { kind: "shell", sessionID: child, shellID: "sh_owned_queued", command: "must not run" },
+        run: Effect.never,
+      })
+      const unrelated = yield* jobs.start({
+        type: "shell",
+        queued: true,
+        recovery: {
+          kind: "shell",
+          sessionID: Session.ID.make("ses_unrelated"),
+          shellID: "sh_other",
+          command: "other work",
+        },
+        run: Effect.never,
+      })
 
       const draining = yield* Deferred.make<void>()
       const scope = yield* Scope.make()
@@ -138,6 +158,8 @@ describe("SessionExecution lifecycle", () => {
       expect(yield* execution.interrupt(sessionID)).toBeTrue()
       yield* execution.awaitIdle(sessionID)
       expect((yield* claims(database))[sessionID]).toBe(false)
+      expect(yield* jobs.get(queued.id)).toMatchObject({ status: "cancelled" })
+      expect(yield* jobs.get(unrelated.id)).toMatchObject({ status: "queued" })
     }),
   )
 
@@ -207,7 +229,8 @@ describe("SessionExecution lifecycle", () => {
       )
       yield* Context.get(restarted, SessionRestart.Service).resumeSuspendedSessions
       yield* Context.get(restarted, SessionExecution.Service).awaitIdle(parent)
-      expect(drained).toEqual([parent])
+      // Retain the cancellation receipt without waking the stopped parent.
+      expect(drained).toEqual([])
       expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
         { payload: { text: expect.stringContaining("Subagent cancelled"), metadata: { state: "cancelled" } } },
       ])

@@ -164,6 +164,10 @@ Outcomes remain distinct:
 
 Tools translate only errors they deliberately classify as recoverable. Broad cause-catching around `execute` is invalid because it consumes interruption and defects.
 
+User cancellation waits for accepted shell producers and owned background descendants to finish cleanup before Session settlement. It retains captured output; deleting a shell record is a separate operation. Cancellation notifications are admitted without waking the stopped Session, while unrelated Sessions remain active. Shutdown interruption retains the existing restart markers instead of publishing an explicit cancellation.
+
+The noninteractive CLI handles repeated stop signals idempotently and emits `session_cancelled` only after prompt admission settles and the backend confirms cleanup. An unknown admission outcome or failed cleanup request is not a successful cancellation receipt.
+
 ## Laws
 
 - **Single execution:** `Tool.make(config)` can execute only `config.execute`.

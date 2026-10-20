@@ -123,12 +123,24 @@ test("queued shells have a cancellable handle and queue waits do not spend execu
         yield* Effect.sleep("550 millis")
         expect((yield* shell.get(queued.id)).status).toBe("queued")
         const cancelled = yield* shell.create({ shell: "sh", command: "printf must-not-run", background: true })
-        yield* shell.remove(cancelled.id)
+        expect((yield* shell.kill(cancelled.id)).status).toBe("killed")
         expect((yield* shell.list()).map((entry) => entry.id)).not.toContain(cancelled.id)
         yield* Effect.forEach(leases, (lease) => lease.release)
         const result = yield* shell.result(queued).pipe(Effect.timeout("3 seconds"))
         expect(result).toMatchObject({ info: { status: "exited", exit: 0 }, capture: { output: "admitted" } })
         expect(result.info.time.started).toBeGreaterThan(queued.time.queued ?? 0)
+        const retained = yield* shell.create({
+          shell: "sh",
+          command: "printf cancellation-evidence; sleep 20",
+          background: true,
+        })
+        yield* shell.output(retained.id).pipe(
+          Effect.tap(() => Effect.sleep("5 millis")),
+          Effect.repeat({ until: (output) => output.output === "cancellation-evidence" }),
+          Effect.timeout("2 seconds"),
+        )
+        expect((yield* shell.kill(retained.id)).status).toBe("killed")
+        expect(yield* shell.result(retained)).toMatchObject({ capture: { output: "cancellation-evidence" } })
       }).pipe(
         Effect.provide(
           AppNodeBuilder.build(Shell.node, [

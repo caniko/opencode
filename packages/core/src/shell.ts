@@ -86,6 +86,8 @@ export interface Interface {
   readonly result: (started: Shell.Info) => Effect.Effect<ShellResult.Result>
   // Replaces the running command's timeout from now; zero clears it.
   readonly timeout: (id: Shell.ID, duration: number) => Effect.Effect<Shell.Info, NotFoundError>
+  // Stop accepted work and await native cleanup without deleting its output.
+  readonly kill: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError>
   readonly output: (id: Shell.ID, input?: Shell.OutputInput) => Effect.Effect<Shell.Output, NotFoundError>
   readonly remove: (id: Shell.ID) => Effect.Effect<void, NotFoundError>
 }
@@ -196,6 +198,12 @@ const layer = () =>
 
       const get = Effect.fn("Shell.get")(function* (id: Shell.ID) {
         return (yield* require(id)).info
+      })
+
+      const kill = Effect.fn("Shell.kill")(function* (id: Shell.ID) {
+        const command = yield* require(id)
+        if (command.stop) yield* command.stop
+        return command.info
       })
 
       const wait = Effect.fn("Shell.wait")(function* (id: Shell.ID) {
@@ -627,7 +635,7 @@ const layer = () =>
         )
       })
 
-      return Service.of({ create, list, get, wait, started, result, timeout, output, remove })
+      return Service.of({ create, list, get, wait, started, result, timeout, kill, output, remove })
     }),
   )
 

@@ -279,7 +279,7 @@ export const Plugin = {
                   }).pipe(
                     Effect.tap((output) => Deferred.succeed(settled, output)),
                     Effect.map((output) => resultMessages(output).join("\n\n")),
-                    Effect.onInterrupt(() => shell.remove(id).pipe(Effect.ignore)),
+                    Effect.onInterrupt(() => shell.kill(id).pipe(Effect.ignore)),
                   ),
               })
               const info = yield* Deferred.await(accepted).pipe(

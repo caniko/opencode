@@ -51,6 +51,7 @@ export function notification(input: {
   output?: Output
 }) {
   return {
+    ...(input.state === "cancelled" ? { resume: false } : {}),
     text: `<shell id="${input.jobID ?? input.shellID}" state="${input.state}" command="${input.command}">\n${input.text}\n</shell>`,
     metadata: {
       source: "shell",
