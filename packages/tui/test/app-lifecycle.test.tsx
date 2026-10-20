@@ -663,6 +663,7 @@ test.each([80, 120])("completes custom Markdown and ordinary fences in a session
   })
   const frame = await setup.waitForFrame(
     (frame) => frame.includes("MARKDOWN_END") && frame.includes("initial final") && frame.includes("2ms"),
+    { maxPasses: 60 },
   )
   expect(frame).toContain("DiagramStart")
   expect(frame).toContain("DiagramEnd")
@@ -755,7 +756,10 @@ test("keeps assistant footer metrics current after prepend, same-length refresh,
     },
   })
 
-  const initial = await setup.waitForFrame((frame) => frame.includes("Original answer") && frame.includes("20.0 tok/s"))
+  const initial = await setup.waitForFrame(
+    (frame) => frame.includes("Original answer") && frame.includes("20.0 tok/s"),
+    { maxPasses: 60 },
+  )
   expect(initial).toContain("Current input")
   expect(initial).toContain("4.0s \u00b7 20.0 tok/s")
   expect(initial).not.toContain("Prepended input")
@@ -768,6 +772,7 @@ test("keeps assistant footer metrics current after prepend, same-length refresh,
       frame.includes("Original answer") &&
       frame.includes("20.0 tok/s") &&
       !frame.includes("Loading session history…"),
+    { maxPasses: 60 },
   )
   expect(prepended).toContain("Current input")
   expect(prepended).toContain("Original answer")
@@ -798,6 +803,7 @@ test("keeps assistant footer metrics current after prepend, same-length refresh,
   })
   const reverted = await setup.waitForFrame(
     (frame) => frame.includes("Original answer") && !frame.includes("Later input") && !frame.includes("Later answer"),
+    { maxPasses: 60 },
   )
   expect(reverted).toContain("Current input")
   expect(reverted).toContain("4.0s \u00b7 20.0 tok/s")

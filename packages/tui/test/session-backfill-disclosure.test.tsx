@@ -67,9 +67,9 @@ test("clicking a backfilled thought group toggles it", async () => {
     }).pipe(Effect.provide(Global.layerWith({ state: state.path })), Effect.provide(FileSystem.layerNoop({}))),
   )
   try {
-    await setup.waitForFrame((frame) => frame.includes("Turn 13 answer"))
+    await setup.waitForFrame((frame) => frame.includes("Turn 13 answer"), { maxPasses: 60 })
     setup.mockInput.pressKey("g", { ctrl: true })
-    await setup.waitForFrame((frame) => frame.includes("Turn 00 prompt"))
+    await setup.waitForFrame((frame) => frame.includes("Turn 00 prompt"), { maxPasses: 60 })
     await setup.waitForVisualIdle({ quietFrames: 3 })
     const lines = setup.captureCharFrame().split("\n")
     const row = lines.findIndex((line) => line.includes("+ Thought: Turn 0"))

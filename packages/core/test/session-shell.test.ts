@@ -94,7 +94,8 @@ const launch = Effect.fn(function* (fixture: Effect.Success<typeof setup>, name:
     .pipe(Effect.scoped, Effect.forkScoped)
   yield* Effect.promise(() => Bun.file(path.join(fixture.tmp.path, `${name}.started`)).exists()).pipe(
     Effect.repeat({ until: (exists) => exists, schedule: Schedule.spaced("10 millis") }),
-    Effect.timeout("5 seconds"),
+    // A cold PowerShell start on hosted Windows can exceed 5s (run 39452044262).
+    Effect.timeout(process.platform === "win32" ? "20 seconds" : "5 seconds"),
   )
   const event = yield* log(fixture.session, fixture.created.id, true).pipe(
     Stream.filter((event): event is SessionEvent.Shell.Started => event.type === "session.shell.started"),
@@ -157,46 +158,49 @@ describe("Session.shell", () => {
     }),
   )
 
-  it.live("runs shells concurrently with an active model and waits for each shell's own completion", () =>
-    Effect.gen(function* () {
-      const fixture = yield* setup
-      const model = yield* fixture.execution.resume(fixture.created.id).pipe(Effect.forkScoped)
-      yield* Deferred.await(fixture.control.started).pipe(Effect.timeout("5 seconds"))
-      const first = yield* launch(fixture, "first")
-      const second = yield* launch(fixture, "second")
+  it.live(
+    "runs shells concurrently with an active model and waits for each shell's own completion",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup
+        const model = yield* fixture.execution.resume(fixture.created.id).pipe(Effect.forkScoped)
+        yield* Deferred.await(fixture.control.started).pipe(Effect.timeout("5 seconds"))
+        const first = yield* launch(fixture, "first")
+        const second = yield* launch(fixture, "second")
 
-      expect(yield* fixture.execution.active).toContain(fixture.created.id)
-      expect(first.caller.pollUnsafe()).toBeUndefined()
-      expect(second.caller.pollUnsafe()).toBeUndefined()
-      expect(yield* fixture.session.messages({ sessionID: fixture.created.id, order: "asc" })).toMatchObject([
-        { type: "shell", shellID: first.shellID, status: "running", metadata: { background: true } },
-        { type: "shell", shellID: second.shellID, status: "running", metadata: { background: true } },
-      ])
+        expect(yield* fixture.execution.active).toContain(fixture.created.id)
+        expect(first.caller.pollUnsafe()).toBeUndefined()
+        expect(second.caller.pollUnsafe()).toBeUndefined()
+        expect(yield* fixture.session.messages({ sessionID: fixture.created.id, order: "asc" })).toMatchObject([
+          { type: "shell", shellID: first.shellID, status: "running", metadata: { background: true } },
+          { type: "shell", shellID: second.shellID, status: "running", metadata: { background: true } },
+        ])
 
-      yield* second.release
-      yield* Fiber.join(second.caller).pipe(Effect.timeout("5 seconds"))
-      expect(first.caller.pollUnsafe()).toBeUndefined()
-      expect(yield* fixture.session.inbox(fixture.created.id)).toMatchObject([
-        {
-          type: "synthetic",
-          payload: {
-            metadata: { source: "shell", shellID: second.shellID, state: "completed" },
-            text: expect.stringContaining("second finished"),
+        yield* second.release
+        yield* Fiber.join(second.caller).pipe(Effect.timeout("5 seconds"))
+        expect(first.caller.pollUnsafe()).toBeUndefined()
+        expect(yield* fixture.session.inbox(fixture.created.id)).toMatchObject([
+          {
+            type: "synthetic",
+            payload: {
+              metadata: { source: "shell", shellID: second.shellID, state: "completed" },
+              text: expect.stringContaining("second finished"),
+            },
           },
-        },
-      ])
-      yield* first.release
-      yield* Fiber.join(first.caller).pipe(Effect.timeout("5 seconds"))
-      expect(
-        (yield* fixture.session.inbox(fixture.created.id))
-          .filter((item) => item.type === "synthetic")
-          .map((item) => item.payload.metadata?.shellID),
-      ).toEqual([second.shellID, first.shellID])
-      expect(yield* fixture.execution.active).toContain(fixture.created.id)
-      expect(fixture.control.wakes).toEqual([])
-      yield* Deferred.succeed(fixture.control.release, undefined)
-      yield* Fiber.join(model).pipe(Effect.timeout("5 seconds"))
-    }),
+        ])
+        yield* first.release
+        yield* Fiber.join(first.caller).pipe(Effect.timeout("5 seconds"))
+        expect(
+          (yield* fixture.session.inbox(fixture.created.id))
+            .filter((item) => item.type === "synthetic")
+            .map((item) => item.payload.metadata?.shellID),
+        ).toEqual([second.shellID, first.shellID])
+        expect(yield* fixture.execution.active).toContain(fixture.created.id)
+        expect(fixture.control.wakes).toEqual([])
+        yield* Deferred.succeed(fixture.control.release, undefined)
+        yield* Fiber.join(model).pipe(Effect.timeout("5 seconds"))
+      }),
+    60_000,
   )
 
   it.live("routes shell completion to the moved Session while retaining output from its original Location", () =>
