@@ -175,8 +175,9 @@ describe("call depth", () => {
         try { f(0) } catch (e) { return [e.name, e instanceof RangeError, e.message] }
       `),
     ).toEqual(["RangeError", true, "Maximum call stack size exceeded"])
-    expect(Date.now() - started).toBeLessThan(2000)
-  })
+    // A runaway interpreter never returns; hosted Windows runners can stall past 2s (run 39414968126).
+    expect(Date.now() - started).toBeLessThan(4000)
+  }, 10_000)
 
   test("uncaught overflow reports the call that overflowed", async () => {
     const failure = await error(`const f = (n) => f(n + 1); return f(0)`)
