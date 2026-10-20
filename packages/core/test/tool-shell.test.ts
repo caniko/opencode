@@ -289,7 +289,7 @@ const runPermissionCommand = (
     expect(yield* permission.list()).toEqual([])
     expect(yield* Queue.size(queue)).toBe(0)
     return { exit, requests }
-  }).pipe(Effect.scoped, Effect.timeout(Duration.seconds(5)))
+  }).pipe(Effect.scoped, Effect.timeout(Duration.seconds(15)))
 
 // Directory cases still document inherited limitations; fixed scanner cases require matching behavior.
 describe("ShellTool scanner permissions", () => {
@@ -772,7 +772,10 @@ describe("ShellTool ordinary shell syntax", () => {
   }
 
   const pwsh = process.env.SHELL_SCAN_PWSH ?? Bun.which("pwsh") ?? Bun.which("powershell")
-  const test = pwsh ? permissionIt.live : permissionIt.live.skip
+  // Cold pwsh scans and runs exceed Bun's 5s default on hosted Linux and Windows
+  // runners (runs 39398909959 and 39474629122).
+  const test = (name: string, body: Parameters<typeof permissionIt.live>[1]) =>
+    (pwsh ? permissionIt.live : permissionIt.live.skip)(name, body, 20_000)
   for (const portable of [false, true]) {
     for (const command of [
       'Write-Output "$(Write-Output hello)"',
