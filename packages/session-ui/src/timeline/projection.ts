@@ -11,6 +11,7 @@ import { createMemo, mapArray, type Accessor } from "solid-js"
 import {
   currentContentDefaultOpen,
   currentToolFailed,
+  currentToolGroupedFile,
   currentToolGroupedRead,
   currentToolHasLoadedFiles,
 } from "../message/current-tool-state"
@@ -687,7 +688,7 @@ function toolGroupType(
     if (detail[category].placement === "grouped") return "context"
     if (currentToolGroupedRead(content)) return "read"
     if (currentToolFailed(content)) return undefined
-    if (content.name === "patch" || content.name === "edit" || content.name === "write") return "file"
+    if (currentToolGroupedFile(content)) return "file"
     return undefined
   }
   if (content.name === "question" || currentToolHasLoadedFiles(content)) return undefined
@@ -705,7 +706,7 @@ function toolGroupType(
   )
     return undefined
   if (currentContentDefaultOpen(content, shellExpanded, editExpanded) !== true) return "context"
-  if (content.name === "patch" || content.name === "edit" || content.name === "write") return "file"
+  if (currentToolGroupedFile(content)) return "file"
   return undefined
 }
 

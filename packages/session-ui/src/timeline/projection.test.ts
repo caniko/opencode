@@ -100,6 +100,54 @@ describe("Timeline.resolveContent", () => {
   })
 })
 
+test("keeps empty writes outside diff-only groups unless metadata supplies the diff", () => {
+  const groups = [
+    { content: "", metadata: { files: [] }, expected: "part" as const },
+    { content: "written\n", metadata: { files: [] }, expected: "file" as const },
+    {
+      content: "",
+      metadata: {
+        files: [{ file: "empty.ts", patch: "@@ -1 +0,0 @@\n-old", additions: 0, deletions: 1, status: "modified" }],
+      },
+      expected: "file" as const,
+    },
+  ].map(({ content, metadata, expected }) => {
+    const projection = createTimelineProjection({
+      sessionMessages: [
+        {
+          id: "assistant-empty-write",
+          type: "assistant",
+          agent: "build",
+          model: { id: "model", providerID: "provider" },
+          time: { created: 0 },
+          content: [
+            {
+              type: "tool",
+              id: "empty-write",
+              name: "write",
+              state: {
+                status: "completed",
+                input: { path: "empty.ts", content },
+                metadata,
+                content: [{ type: "text", text: "Written" }],
+              },
+              time: { created: 0 },
+            },
+          ],
+        },
+      ],
+      status: { type: "idle" },
+      reasoningMode: "hidden",
+      editToolDefaultOpen: true,
+    })
+    return {
+      actual: projection.rows.flatMap((row) => (row._tag === "AssistantPart" ? [row.group.type] : [])),
+      expected,
+    }
+  })
+  expect(groups.map(({ actual }) => actual)).toEqual(groups.map(({ expected }) => [expected]))
+})
+
 describe("reuseTimelineRows", () => {
   test.each([
     {
