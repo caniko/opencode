@@ -10,6 +10,8 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Shell } from "@opencode/core/shell"
 import { Job } from "@opencode/core/job"
 import { Global } from "@opencode/util/global"
+import fs from "fs/promises"
+import path from "path"
 import { hostEnvironmentLayer } from "./fixture/environment"
 import { tempGlobalLayer } from "./fixture/global"
 import { tempLocationLayer } from "./fixture/location"
@@ -467,4 +469,64 @@ test("entered shells settle only with exactly one matching token-bound completio
       ),
     ),
   )
+}, 10000)
+
+test("start framing is hook-owned and capture failure after entry stays reconciling", async () => {
+  if (process.platform === "win32") return
+  const inherited = process.env.OPENCODE_SHELL_NOTIFY_START
+  process.env.OPENCODE_SHELL_NOTIFY_START = "1"
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const shell = yield* Shell.Service
+          const hooks = yield* PluginHooks.Service
+          const global = yield* Global.Service
+          const location = yield* Location.Service
+          // An inherited flag never reaches an ordinary payload as a forgeable token.
+          const plain = yield* shell.create({
+            shell: "sh",
+            command: `printf '%s' "\${OPENCODE_SHELL_START_TOKEN:-none}"`,
+            timeout: 1000,
+          })
+          expect(yield* shell.result(plain)).toMatchObject({
+            info: { status: "exited", exit: 0 },
+            capture: { output: "none" },
+          })
+
+          yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+            }),
+          )
+          const id = Shell.ID.create()
+          yield* Effect.promise(() =>
+            fs.symlink("/dev/full", path.join(global.data, Shell.DIRECTORY, location.project.id, `${id}.out`)),
+          )
+          const marker = `printf '\\036%s\\037' "$OPENCODE_SHELL_START_TOKEN" >&2`
+          const failed = yield* shell.create({
+            id,
+            shell: "sh",
+            command: `${marker}; head -c 16777216 /dev/zero; ${proof}`,
+            background: true,
+          })
+          const result = yield* shell.result(failed).pipe(Effect.timeout("5 seconds"))
+          expect(result.info.status).toBe("failed")
+          expect(result.reconciling).toBe(true)
+        }).pipe(
+          Effect.provide(
+            AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node, Global.node, Location.node]), [
+              Location.node.replace(tempLocationLayer),
+              Global.node.replace(tempGlobalLayer),
+              Config.node.replace(Config.testLayer()),
+              Environment.node.replace(hostEnvironmentLayer),
+            ]),
+          ),
+        ),
+      ),
+    )
+  } finally {
+    if (inherited === undefined) delete process.env.OPENCODE_SHELL_NOTIFY_START
+    else process.env.OPENCODE_SHELL_NOTIFY_START = inherited
+  }
 }, 10000)

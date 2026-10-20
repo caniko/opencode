@@ -323,6 +323,10 @@ const layer = () =>
             ...(sessionEnvironment ?? process.env),
             TERM: "xterm-256color",
             OPENCODE_TERMINAL: "1",
+            // Only a create.before hook may opt a trusted adapter into start framing;
+            // an inherited flag would hand the token to an ordinary payload.
+            OPENCODE_SHELL_NOTIFY_START: undefined,
+            OPENCODE_SHELL_START_TOKEN: undefined,
           },
         }
         const caller = yield* Effect.context<R>()
@@ -446,7 +450,8 @@ const layer = () =>
                       const marker = startToken ? Buffer.from(`\x1e${startToken}\x1f`) : undefined
                       const backpressure = startToken ? Buffer.from(`\x1e${startToken}:backpressure:`) : undefined
                       const complete = startToken ? Buffer.from(`\x1e${startToken}:complete:`) : undefined
-                      // Every token-bound completion frame seen after entry; settlement requires exactly one.
+                      // Token-bound completion frames seen after entry; settlement requires exactly one,
+                      // so at most two are retained however many arrive.
                       const completions: string[] = []
                       let retryAfterMs: number | undefined
                       const nativeStarted = Deferred.makeUnsafe<void>()
@@ -534,9 +539,11 @@ const layer = () =>
                                       pending = data.subarray(index)
                                       return Buffer.concat(kept)
                                     }
-                                    if (end === -1) completions.push("malformed")
-                                    else {
-                                      completions.push(data.subarray(body, body + end).toString("utf8"))
+                                    if (end === -1) {
+                                      if (completions.length < 2) completions.push("malformed")
+                                    } else {
+                                      if (completions.length < 2)
+                                        completions.push(data.subarray(body, body + end).toString("utf8"))
                                       kept.push(data.subarray(from, index))
                                       from = body + end + 1
                                     }
@@ -685,7 +692,14 @@ const layer = () =>
                       yield* Deferred.succeed(command.started, command.info)
                       // Hold the handle's scope open until the command terminates; closing it earlier would
                       // release (kill) the process before its exit is observed.
-                      const final = yield* Deferred.await(finished)
+                      const final = yield* Deferred.await(finished).pipe(
+                        // A capture failure after entry leaves the workload outcome unknown.
+                        Effect.tapError(() =>
+                          Effect.sync(() => {
+                            if (marker) command.reconciling = true
+                          }),
+                        ),
+                      )
                       // An adapter exit is not workload evidence: an entered exit settles only
                       // with exactly one token-bound completion proof for the same code.
                       if (

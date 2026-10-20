@@ -290,6 +290,9 @@ export const Plugin = {
                     const result = yield* shell.result(info)
                     if (result.reconciling)
                       return yield* new Job.ReconcilingError({ message: result.info.error ?? Shell.RECONCILING })
+                    // A failed capture is not a completed result, even when part of it is readable.
+                    if (result.info.status === "failed")
+                      return yield* Effect.fail(new Error(result.info.error ?? "Command failed"))
                     if (!result.capture) return yield* new Shell.NotFoundError({ id: info.id })
                     const output = ShellResult.output(result)
                     return {
