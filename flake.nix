@@ -26,6 +26,7 @@
     homeModules.browser-connection = import ./nix/home-manager.nix {toolbelt = canix-toolbelt;};
     homeManagerModules.browser-connection = self.homeModules.browser-connection;
     lib.shellAdmissionReadyVersion = 1;
+    lib.shellAdmissionBackpressureVersion = 1;
     checks = forEachSystem (pkgs: {
       browser-connection = import ./nix/browser-connection-eval.nix {
         inherit pkgs;
