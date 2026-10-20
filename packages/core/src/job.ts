@@ -1,6 +1,20 @@
 export * as Job from "./job.js"
 
-import { Array, Cause, Clock, Context, Deferred, Effect, Exit, Layer, Schema, Scope, SynchronizedRef } from "effect"
+import {
+  Array,
+  Cause,
+  Clock,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Result,
+  Schema,
+  Scope,
+  SynchronizedRef,
+} from "effect"
+import { isDeepStrictEqual } from "node:util"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Identifier } from "./id/id.js"
 import { KV } from "./kv.js"
@@ -16,6 +30,20 @@ const Background = Schema.Struct({
       sessionID: SessionSchema.ID,
       shellID: Schema.String,
       command: Schema.String,
+      // Preserve the request, not a prepared environment or entry capability.
+      // Legacy notification-only markers remain readable and are never replayed.
+      request: Schema.optionalKey(
+        Schema.Struct({
+          cwd: Schema.String,
+          shell: Schema.String,
+          timeout: Schema.Number,
+          queueTimeout: Schema.optionalKey(Schema.Number),
+          background: Schema.Boolean,
+          environment: Schema.Literals(["project", "bootstrap"]),
+          messageID: SessionMessage.ID,
+          toolCallID: Schema.String,
+        }),
+      ),
     }),
     Schema.Struct({
       kind: Schema.Literal("subagent"),
@@ -25,18 +53,62 @@ const Background = Schema.Struct({
       description: Schema.String,
     }),
   ]),
-  status: Schema.Literals(["running", "completed", "error", "cancelled"]),
+  status: Schema.Literals(["queued", "running", "cancelling", "reconciling", "completed", "error", "cancelled"]),
+  notified: Schema.optionalKey(Schema.Boolean),
   output: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
+  time: Schema.optionalKey(
+    Schema.Struct({
+      submitted: Schema.Number,
+      executed: Schema.optionalKey(Schema.Number),
+      completed: Schema.optionalKey(Schema.Number),
+    }),
+  ),
 })
 
 export type Background = typeof Background.Type
 export type Recovery = Background["recovery"]
 export type Status = Background["status"]
 
+export function isActive(status: Status): status is "queued" | "running" | "cancelling" {
+  return status === "queued" || status === "running" || status === "cancelling"
+}
+
 const decodeBackground = Schema.decodeUnknownResult(Background)
 const backgroundPrefix = "job.background/"
 const COMPLETED_LIMIT = 25
+export const ACTIVE_LIMIT = 128
+export const REQUEST_LIMIT = 65_536
+
+export class ConflictError extends Schema.TaggedError<ConflictError>()("Job.ConflictError", {
+  id: Schema.String,
+}) {
+  override get message() {
+    return `Job ${this.id} was already accepted with a different request; no work was dispatched.`
+  }
+}
+
+export class PayloadError extends Schema.TaggedError<PayloadError>()("Job.PayloadError", {
+  limit: Schema.Number,
+}) {
+  override get message() {
+    return `Job request exceeds ${this.limit} bytes; no work was accepted.`
+  }
+}
+
+export class CapacityError extends Schema.TaggedError<CapacityError>()("Job.CapacityError", {
+  retryAfterMs: Schema.Number,
+}) {
+  override get message() {
+    return "Job queue is full; no work was accepted. Retry after capacity becomes available."
+  }
+}
+
+// Entered work whose outcome is unproven. The job settles as reconciling, without a
+// completion time, and its accepted intent is retained without automatic replay.
+export class ReconcilingError extends Schema.TaggedError<ReconcilingError>()("Job.ReconcilingError", {
+  message: Schema.String,
+}) {}
 
 export type Info = {
   id: string
@@ -44,6 +116,7 @@ export type Info = {
   title?: string
   status: Status
   started_at: number
+  executed_at?: number
   completed_at?: number
   output?: string
   error?: string
@@ -59,6 +132,7 @@ type Active = {
   blockingSessions: Map<SessionSchema.ID, number>
   isBackgrounded: boolean
   consumed: boolean
+  queuedSubmission: boolean
   recovery?: Recovery
 }
 
@@ -100,7 +174,9 @@ export type StartInput = {
   metadata?: Record<string, unknown>
   recovery?: Recovery
   notificationID?: SessionMessage.ID
-  run: Effect.Effect<string, unknown>
+  queued?: boolean
+  // Queued producers mark actual execution after preparation and admission.
+  run: Effect.Effect<string, unknown> | ((started: Effect.Effect<void>) => Effect.Effect<string, unknown>)
 }
 
 export type WaitInput = {
@@ -127,13 +203,14 @@ export type BackgroundAllInput = {
 
 export interface Interface {
   readonly get: (id: string) => Effect.Effect<Info | undefined>
-  readonly start: (input: StartInput) => Effect.Effect<Info>
+  readonly start: (input: StartInput) => Effect.Effect<Info, CapacityError | ConflictError | PayloadError>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
+  // Acknowledge delivery, not execution: unresolved accepted intents remain durable.
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
 }
 
@@ -143,6 +220,23 @@ function snapshot(job: Active): Info {
   return {
     ...job.info,
     ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}),
+  }
+}
+
+function recoveredInfo(background: Background): Info | undefined {
+  if (background.recovery.kind !== "shell" || !background.recovery.request) return
+  return {
+    id: background.id,
+    type: "shell",
+    title: background.recovery.command,
+    status: isActive(background.status) ? "reconciling" : background.status,
+    started_at: background.time?.submitted ?? 0,
+    executed_at: background.time?.executed,
+    completed_at: background.time?.completed,
+    output: background.output,
+    error: background.error,
+    notificationID: background.notificationID,
+    metadata: { sessionID: background.recovery.sessionID, shellID: background.recovery.shellID },
   }
 }
 
@@ -175,6 +269,8 @@ function decrementSession(input: Map<SessionSchema.ID, number>, sessionID: Sessi
  * Unconsumed results survive the start-to-wait handoff. Foreground block/cancel
  * and non-recoverable wait results enter a 25-entry consumed history. Recoverable
  * wait results stay available for background registration and acknowledgment.
+ * Accepted shell requests without a local owner remain reconciling across restarts;
+ * notice delivery neither proves native cleanup nor authorizes their replay.
  */
 export const make = Effect.gen(function* () {
   const kv = yield* KV.Service
@@ -183,10 +279,21 @@ export const make = Effect.gen(function* () {
     scope: yield* Scope.Scope,
   }
 
+  const backgrounds = Effect.gen(function* () {
+    const recovered: Background[] = []
+    let after: string | undefined
+    do {
+      const page = yield* kv.scan({ prefix: backgroundPrefix, after })
+      recovered.push(...Array.filterMap(page.entries, (entry) => decodeBackground(entry.value)))
+      after = page.next
+    } while (after)
+    return recovered
+  })
+
   const consume = (id: string, generation: Scope.Closeable) =>
     SynchronizedRef.update(state.jobs, (jobs) => {
       const job = jobs.get(id)
-      if (!job || job.scope !== generation || job.info.status === "running" || job.consumed) return jobs
+      if (!job || job.scope !== generation || isActive(job.info.status) || job.consumed) return jobs
       const next = new Map(jobs)
       // Order history by first consumption, not by start time or subsequent reads.
       next.delete(id)
@@ -203,6 +310,11 @@ export const make = Effect.gen(function* () {
       notificationID: job.info.notificationID,
       recovery: job.recovery,
       status: job.info.status,
+      time: {
+        submitted: job.info.started_at,
+        ...(job.info.executed_at !== undefined ? { executed: job.info.executed_at } : {}),
+        ...(job.info.completed_at !== undefined ? { completed: job.info.completed_at } : {}),
+      },
       ...(job.info.output !== undefined ? { output: job.info.output } : {}),
       ...(job.info.error !== undefined ? { error: job.info.error } : {}),
     })
@@ -216,24 +328,28 @@ export const make = Effect.gen(function* () {
         const job = jobs.get(id)
         if (!job) return [{}, jobs]
         if (job.scope !== scope) return [{}, jobs]
-        if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
-        const status: Exclude<Status, "running"> = Exit.isSuccess(exit)
+        if (!isActive(job.info.status)) return [{ info: snapshot(job) }, jobs]
+        const status: Exclude<Status, "queued" | "running" | "cancelling"> = Exit.isSuccess(exit)
           ? "completed"
           : Cause.hasInterruptsOnly(exit.cause)
             ? "cancelled"
-            : "error"
+            : Result.getOrUndefined(Cause.findError(exit.cause)) instanceof ReconcilingError
+              ? "reconciling"
+              : "error"
         const next = {
           ...job,
           blockingSessions: new Map<SessionSchema.ID, number>(),
           info: {
             ...job.info,
             status,
-            completed_at,
+            ...(status === "reconciling" ? {} : { completed_at }),
             ...(Exit.isSuccess(exit) ? { output: exit.value } : {}),
             ...(Exit.isFailure(exit) ? { error: errorText(exit.cause) } : {}),
           },
         }
-        if (status !== "cancelled") yield* persistBackground(next)
+        // Shutdown interruption leaves the prior marker for reconciliation;
+        // explicit cancellation becomes terminal only after producer cleanup.
+        if (status !== "cancelled" || job.info.status === "cancelling") yield* persistBackground(next)
         return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]
       }),
     )
@@ -246,9 +362,25 @@ export const make = Effect.gen(function* () {
 
   const get: Interface["get"] = Effect.fn("Job.get")(function* (id) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
-    if (!job) return undefined
-    return snapshot(job)
+    if (job) return snapshot(job)
+    const background = (yield* backgrounds).find((entry) => entry.id === id)
+    return background && recoveredInfo(background)
   })
+
+  const markRunning = (id: string, scope: Scope.Closeable) =>
+    SynchronizedRef.updateEffect(
+      state.jobs,
+      Effect.fnUntraced(function* (jobs) {
+        const job = jobs.get(id)
+        if (!job || job.scope !== scope || job.info.status !== "queued") return jobs
+        const next = {
+          ...job,
+          info: { ...job.info, status: "running" as const, executed_at: yield* Clock.currentTimeMillis },
+        }
+        yield* persistBackground(next)
+        return new Map(jobs).set(id, next)
+      }),
+    )
 
   const start: Interface["start"] = Effect.fnUntraced(function* (input) {
     return yield* Effect.uninterruptibleMask((restore) =>
@@ -259,21 +391,55 @@ export const make = Effect.gen(function* () {
         const backgrounded = yield* Deferred.make<Info>()
         const result = yield* SynchronizedRef.modifyEffect(
           state.jobs,
-          Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [StartResult, Map<string, Active>]> {
+          Effect.fnUntraced(function* (jobs): Effect.fn.Return<
+            readonly [StartResult, Map<string, Active>],
+            CapacityError | ConflictError | PayloadError
+          > {
             const existing = jobs.get(id)
-            if (existing?.info.status === "running") {
+            if (existing && (input.queued || existing.queuedSubmission)) {
+              if (existing.info.type !== input.type || !isDeepStrictEqual(existing.recovery, input.recovery))
+                return yield* new ConflictError({ id })
+              // A terminal result awaiting acknowledgment is still the accepted
+              // request, not permission to dispatch its side effects again.
               return [{ info: snapshot(existing) }, jobs]
             }
+            if (existing && isActive(existing.info.status)) {
+              return [{ info: snapshot(existing) }, jobs]
+            }
+            // ponytail: scan the submission-bounded marker set; add an ID index
+            // here if the queue policy grows beyond the current 128 requests.
+            const durable = input.queued || input.id !== undefined ? yield* backgrounds : []
+            const accepted = durable.find((entry) => entry.id === id)
+            const recovered = accepted && recoveredInfo(accepted)
+            if (accepted && recovered) {
+              if (recovered.type !== input.type || !isDeepStrictEqual(accepted.recovery, input.recovery))
+                return yield* new ConflictError({ id })
+              return [{ info: recovered }, jobs]
+            }
+            if (input.queued && input.recovery && Buffer.byteLength(JSON.stringify(input.recovery)) > REQUEST_LIMIT)
+              return yield* new PayloadError({ limit: REQUEST_LIMIT })
+            if (
+              input.queued &&
+              new Set([
+                ...[...jobs.values()]
+                  .filter((job) => !job.consumed || job.info.notificationID)
+                  .map((job) => job.info.id),
+                ...durable.map((entry) => entry.id),
+              ]).size >= ACTIVE_LIMIT
+            )
+              return yield* new CapacityError({ retryAfterMs: 250 })
             const scope = yield* Scope.fork(state.scope, "parallel")
             const job = {
               info: {
                 id,
                 type: input.type,
                 title: input.title,
-                status: "running" as const,
+                status: input.queued ? ("queued" as const) : ("running" as const),
                 started_at,
                 metadata: input.metadata,
-                ...(input.notificationID ? { notificationID: input.notificationID } : {}),
+                ...(input.notificationID || (input.queued && input.recovery)
+                  ? { notificationID: input.notificationID ?? SessionMessage.ID.create() }
+                  : {}),
               },
               done,
               backgrounded,
@@ -281,13 +447,17 @@ export const make = Effect.gen(function* () {
               blockingSessions: new Map<SessionSchema.ID, number>(),
               isBackgrounded: false,
               consumed: false,
+              queuedSubmission: input.queued === true,
               recovery: input.recovery,
             }
+            // Persist the accepted intent before the first producer effect,
+            // including foreground work that may queue or be interrupted.
+            if (input.queued) yield* persistBackground(job)
             return [{ info: snapshot(job), scope }, new Map(jobs).set(id, job)]
           }),
         )
         if ("scope" in result)
-          yield* restore(input.run).pipe(
+          yield* restore(typeof input.run === "function" ? input.run(markRunning(id, result.scope)) : input.run).pipe(
             Effect.exit,
             Effect.flatMap((exit) => settle(id, result.scope, exit)),
             Effect.asVoid,
@@ -300,9 +470,12 @@ export const make = Effect.gen(function* () {
 
   const wait: Interface["wait"] = Effect.fn("Job.wait")(function* (input) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
-    if (!job) return { timedOut: false }
+    if (!job) {
+      const info = yield* get(input.id)
+      return { ...(info ? { info } : {}), timedOut: false }
+    }
     return yield* Effect.gen(function* () {
-      if (job.info.status !== "running") return { info: snapshot(job), timedOut: false }
+      if (!isActive(job.info.status)) return { info: snapshot(job), timedOut: false }
       if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
       if (input.timeout <= 0) return { info: snapshot(job), timedOut: true }
       const info = yield* Deferred.await(job.done).pipe(Effect.timeoutOption(input.timeout))
@@ -311,7 +484,7 @@ export const make = Effect.gen(function* () {
     }).pipe(
       // Recoverable wait -> background is a supported handoff, even after failure.
       Effect.tap((result) =>
-        result.info.status === "running" || job.recovery ? Effect.void : consume(input.id, job.scope),
+        isActive(result.info.status) || job.recovery ? Effect.void : consume(input.id, job.scope),
       ),
     )
   })
@@ -319,7 +492,7 @@ export const make = Effect.gen(function* () {
   const removeBlock = Effect.fnUntraced(function* (input: BlockInput) {
     yield* SynchronizedRef.update(state.jobs, (jobs) => {
       const job = jobs.get(input.id)
-      if (!job || job.info.status !== "running" || job.isBackgrounded) return jobs
+      if (!job || !isActive(job.info.status) || job.isBackgrounded) return jobs
       return new Map(jobs).set(input.id, {
         ...job,
         blockingSessions: decrementSession(job.blockingSessions, input.sessionID),
@@ -331,7 +504,7 @@ export const make = Effect.gen(function* () {
     const result = yield* SynchronizedRef.modify(state.jobs, (jobs): readonly [BlockStart, Map<string, Active>] => {
       const job = jobs.get(input.id)
       if (!job) return [{ type: "missing" }, jobs]
-      if (job.info.status !== "running") return [{ type: "finished", info: snapshot(job), generation: job.scope }, jobs]
+      if (!isActive(job.info.status)) return [{ type: "finished", info: snapshot(job), generation: job.scope }, jobs]
       if (job.isBackgrounded) return [{ type: "backgrounded", info: snapshot(job) }, jobs]
       return [
         { type: "wait", wait: { done: job.done, backgrounded: job.backgrounded, generation: job.scope } },
@@ -376,7 +549,7 @@ export const make = Effect.gen(function* () {
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [BackgroundResult, Map<string, Active>]> {
         const job = jobs.get(id)
         // Recoverable work may finish before the caller backgrounds it.
-        if (!job || (job.info.status !== "running" && !job.recovery)) return [{}, jobs]
+        if (!job || (!isActive(job.info.status) && !job.recovery)) return [{}, jobs]
         if (job.isBackgrounded) return [{ info: snapshot(job) }, jobs]
         const next = yield* markBackground(job)
         return [{ info: snapshot(next), backgrounded: job.backgrounded }, new Map(jobs).set(id, next)]
@@ -395,7 +568,7 @@ export const make = Effect.gen(function* () {
         const results: Required<BackgroundResult>[] = []
         const next = new Map(jobs)
         for (const [id, job] of jobs) {
-          if (job.info.status !== "running") continue
+          if (!isActive(job.info.status)) continue
           if (job.isBackgrounded) continue
           if (input.type !== undefined && job.info.type !== input.type) continue
           if (!job.blockingSessions.has(input.sessionID)) continue
@@ -411,20 +584,18 @@ export const make = Effect.gen(function* () {
   })
 
   const cancel: Interface["cancel"] = Effect.fn("Job.cancel")(function* (id) {
-    const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [FinishResult, Map<string, Active>]> {
         const job = jobs.get(id)
         if (!job) return [{}, jobs]
-        if (job.info.status !== "running") return [{ info: snapshot(job), generation: job.scope }, jobs]
+        if (!isActive(job.info.status)) return [{ info: snapshot(job), generation: job.scope }, jobs]
         const next = {
           ...job,
           blockingSessions: new Map<SessionSchema.ID, number>(),
           info: {
             ...job.info,
-            status: "cancelled" as const,
-            completed_at,
+            status: "cancelling" as const,
           },
         }
         yield* persistBackground(next)
@@ -434,29 +605,43 @@ export const make = Effect.gen(function* () {
         ]
       }),
     )
-    if (result.info && result.done) yield* Deferred.succeed(result.done, result.info)
-    if (result.scope) yield* Scope.close(result.scope, Exit.void)
+    // Closing the producer scope performs process/descendant cleanup. Waiters
+    // and durable recovery must not see a terminal cancellation before it ends.
+    const info = result.scope
+      ? yield* Scope.close(result.scope, Exit.void).pipe(Effect.andThen(settle(id, result.scope, Exit.interrupt())))
+      : result.info
     if (result.generation) yield* consume(id, result.generation)
-    return result.info
+    return info ?? (yield* get(id))
   })
 
-  const pendingBackground: Interface["pendingBackground"] = Effect.gen(function* () {
-    const recovered: Background[] = []
-    let after: string | undefined
-    do {
-      const page = yield* kv.scan({ prefix: backgroundPrefix, after })
-      recovered.push(...Array.filterMap(page.entries, (entry) => decodeBackground(entry.value)))
-      after = page.next
-    } while (after)
-    return recovered
-  }).pipe(Effect.withSpan("Job.pendingBackground"))
+  const pendingBackground: Interface["pendingBackground"] = backgrounds.pipe(
+    Effect.map((entries) => entries.filter((entry) => !entry.notified)),
+    Effect.withSpan("Job.pendingBackground"),
+  )
 
   const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")((notificationID) =>
     SynchronizedRef.updateEffect(state.jobs, (jobs) =>
       Effect.gen(function* () {
+        const background = Result.getOrUndefined(
+          decodeBackground(yield* kv.get(`${backgroundPrefix}${notificationID}`)),
+        )
+        if (
+          background?.recovery.kind === "shell" &&
+          background.recovery.request &&
+          (isActive(background.status) || background.status === "reconciling")
+        ) {
+          // A delivered notice is not native cleanup evidence. Keep the bounded
+          // accepted intent until its outcome can actually be reconciled.
+          yield* kv.set(`${backgroundPrefix}${notificationID}`, {
+            ...background,
+            status: "reconciling",
+            notified: true,
+          })
+          return jobs
+        }
         yield* kv.remove(`${backgroundPrefix}${notificationID}`)
         const entry = [...jobs].find(([, job]) => job.info.notificationID === notificationID)
-        if (!entry || entry[1].info.status === "running") return jobs
+        if (!entry || isActive(entry[1].info.status)) return jobs
         const next = new Map(jobs)
         next.delete(entry[0])
         return next

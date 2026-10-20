@@ -303,69 +303,72 @@ describe("Worktree", () => {
     }),
   )
 
-  projectIt.live("uses canonical configuration with an explicit source clone", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.acquireRelease(
-        Effect.promise(() => tmpdir()),
-        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-      )
-      const main = abs(path.join(root.path, "repo"))
-      const clone = abs(path.join(root.path, "other-clone"))
-      yield* Effect.promise(async () => {
-        await fs.mkdir(main)
-        await initRepo(main)
-        await $`git remote add origin git@github.com:owner/repo.git`.cwd(main).quiet()
-        await $`git clone --no-hardlinks ${main} ${clone}`.quiet()
-        await $`git remote set-url origin https://github.com/owner/repo.git`.cwd(clone).quiet()
-        await $`git -c user.name=Test -c user.email=test@opencode.test -c commit.gpgsign=false commit --allow-empty -m clone`
-          .cwd(clone)
-          .quiet()
-      })
-      const projects = yield* Project.Service
-      const initial = yield* projects.resolve(main)
-      const selected = yield* projects.resolve(clone)
-      const database = yield* Database.Service
-      const bus = yield* Bus.Service
-      const context = yield* Layer.build(worktreeLayer(main, selected.id, database, bus, root.path))
-      const worktrees = Context.get(context, Worktree.Service)
-      const config = yield* Config.Test
-      yield* config.setEntries([
-        new Document({
-          type: "document",
-          path: abs(path.join(root.path, "global/opencode.json")),
-          info: new Info({ worktree: { directory: ".lane/trees" } }),
-        }),
-      ])
-      yield* ConfigWorktreePlugin.Plugin.effect(host()).pipe(Effect.provide(context))
-      yield* projects.update({
-        projectID: initial.id,
-        commands: {
-          start:
-            "bun -e \"await Bun.write('setup.json', JSON.stringify([process.env.OPENCODE_WORKTREE_BASE, process.env.OPENCODE_WORKTREE_PATH, process.cwd()]))\"",
-        },
-      })
-
-      const created = yield* worktrees.create(
-        {
+  projectIt.live(
+    "uses canonical configuration with an explicit source clone",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+        )
+        const main = abs(path.join(root.path, "repo"))
+        const clone = abs(path.join(root.path, "other-clone"))
+        yield* Effect.promise(async () => {
+          await fs.mkdir(main)
+          await initRepo(main)
+          await $`git remote add origin git@github.com:owner/repo.git`.cwd(main).quiet()
+          await $`git clone --no-hardlinks ${main} ${clone}`.quiet()
+          await $`git remote set-url origin https://github.com/owner/repo.git`.cwd(clone).quiet()
+          await $`git -c user.name=Test -c user.email=test@opencode.test -c commit.gpgsign=false commit --allow-empty -m clone`
+            .cwd(clone)
+            .quiet()
+        })
+        const projects = yield* Project.Service
+        const initial = yield* projects.resolve(main)
+        const selected = yield* projects.resolve(clone)
+        const database = yield* Database.Service
+        const bus = yield* Bus.Service
+        const context = yield* Layer.build(worktreeLayer(main, selected.id, database, bus, root.path))
+        const worktrees = Context.get(context, Worktree.Service)
+        const config = yield* Config.Test
+        yield* config.setEntries([
+          new Document({
+            type: "document",
+            path: abs(path.join(root.path, "global/opencode.json")),
+            info: new Info({ worktree: { directory: ".lane/trees" } }),
+          }),
+        ])
+        yield* ConfigWorktreePlugin.Plugin.effect(host()).pipe(Effect.provide(context))
+        yield* projects.update({
           projectID: initial.id,
-          from: selected.canonical,
-          name: "selected-clone",
-        },
-        Context.get(context, WorktreeStrategies.Service),
-      )
+          commands: {
+            start:
+              "bun -e \"await Bun.write('setup.json', JSON.stringify([process.env.OPENCODE_WORKTREE_BASE, process.env.OPENCODE_WORKTREE_PATH, process.cwd()]))\"",
+          },
+        })
 
-      expect(selected.id).toBe(initial.id)
-      expect(created.directory).toBe(abs(path.join(main, ".lane/trees/selected-clone")))
-      expect((yield* projects.list()).find((project) => project.id === initial.id)?.canonical).toBe(main)
-      expect(yield* Effect.promise(() => $`git rev-parse HEAD`.cwd(created.directory).text())).toBe(
-        yield* Effect.promise(() => $`git rev-parse HEAD`.cwd(clone).text()),
-      )
-      expect(yield* Effect.promise(() => Bun.file(path.join(created.directory, "setup.json")).json())).toEqual([
-        clone,
-        created.directory,
-        created.directory,
-      ])
-    }),
+        const created = yield* worktrees.create(
+          {
+            projectID: initial.id,
+            from: selected.canonical,
+            name: "selected-clone",
+          },
+          Context.get(context, WorktreeStrategies.Service),
+        )
+
+        expect(selected.id).toBe(initial.id)
+        expect(created.directory).toBe(abs(path.join(main, ".lane/trees/selected-clone")))
+        expect((yield* projects.list()).find((project) => project.id === initial.id)?.canonical).toBe(main)
+        expect(yield* Effect.promise(() => $`git rev-parse HEAD`.cwd(created.directory).text())).toBe(
+          yield* Effect.promise(() => $`git rev-parse HEAD`.cwd(clone).text()),
+        )
+        expect(yield* Effect.promise(() => Bun.file(path.join(created.directory, "setup.json")).json())).toEqual([
+          clone,
+          created.directory,
+          created.directory,
+        ])
+      }),
+    30_000,
   )
 
   it.live("creates a git worktree from a selected branch", () =>

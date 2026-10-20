@@ -14,6 +14,13 @@ describe("debug paths command", () => {
     expect(paths.stdout).toContain("opencode debug paths [flags]")
   })
 
+  test("shows troubleshooting help outside the CLI package without loading a terminal runtime", async () => {
+    const result = await cli(["debug", "paths", "--help"], undefined, path.resolve(import.meta.dir, "../../.."))
+
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" })
+    expect(result.stdout).toContain("opencode debug paths [flags]")
+  })
+
   test("prints resolved global paths without starting a server", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-debug-paths-"))
 
@@ -50,9 +57,9 @@ describe("debug paths command", () => {
   })
 })
 
-async function cli(args: string[], env?: Record<string, string>) {
+async function cli(args: string[], env?: Record<string, string>, cwd = path.join(import.meta.dir, "..")) {
   const child = Bun.spawn([process.execPath, "run", path.join(import.meta.dir, "../src/index.ts"), ...args], {
-    cwd: path.join(import.meta.dir, ".."),
+    cwd,
     env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",

@@ -16,7 +16,7 @@ export default Runtime.handler(Commands.commands.mini, (input) =>
       standalone: input.standalone,
       mismatch: "replace",
     })
-    const config = yield* Config.Service
+    const config = yield* Config.Service.pipe(Effect.provide(Config.layer))
     const global = yield* Global.Service
     const resolved = resolve(yield* config.get(), { terminalSuspend: process.platform !== "win32" })
     const fileSystem = yield* FileSystem.FileSystem

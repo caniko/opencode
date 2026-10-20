@@ -114,6 +114,11 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   passthru = {
     inherit (finalAttrs) env;
+    shellPreparationVersion = 1;
+    shellAdmissionReadyVersion = 2;
+    shellAdmissionBackpressureVersion = 1;
+    sessionCancellationVersion = 1;
+    compactionPlanVersion = 1;
   };
 
   meta = {

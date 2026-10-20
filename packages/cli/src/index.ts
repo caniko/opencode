@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
-import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import { runMain } from "@effect/platform-node/NodeRuntime"
+import { layer } from "@effect/platform-node/NodeServices"
 import { Cause, Effect } from "effect"
 import { getErrorReported } from "effect/Runtime"
 import { Commands } from "./commands/commands"
@@ -11,7 +12,6 @@ import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION }
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
-import { Config } from "./config"
 import { Npm } from "@opencode/util/npm"
 import { EffectFlock } from "@opencode/util/effect-flock"
 import { Heap } from "./heap"
@@ -19,7 +19,7 @@ import { CpuProfile } from "./cpu-profile"
 
 if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
   const { askpass } = await import("./ssh-askpass")
-  process.exit(await Effect.runPromise(askpass.pipe(Effect.provide(NodeServices.layer))))
+  process.exit(await Effect.runPromise(askpass.pipe(Effect.provide(layer))))
 }
 
 const Handlers = Runtime.handlers(Commands, {
@@ -102,6 +102,7 @@ Effect.gen(function* () {
     local: OPENCODE_LOCAL,
     args: process.argv.slice(2),
   })
+  // Terminal configuration belongs to its consuming handlers, not headless command startup.
   return yield* Runtime.run(Commands, Handlers, { version: OPENCODE_VERSION })
 }).pipe(
   Effect.catchCause((cause) =>
@@ -111,7 +112,6 @@ Effect.gen(function* () {
     }).pipe(Effect.andThen(Effect.failCause(cause))),
   ),
   Effect.annotateLogs({ role: "cli" }),
-  Effect.provide(Config.layer),
   Effect.provide(Updater.layer),
   Effect.provide(
     LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node, EffectFlock.node]), {
@@ -131,7 +131,7 @@ Effect.gen(function* () {
       channel: OPENCODE_CHANNEL,
     }),
   ),
-  Effect.provide(NodeServices.layer),
+  Effect.provide(layer),
   Effect.scoped,
   Effect.tap(() => Effect.sync(() => process.exit(process.exitCode ?? 0))),
   // runMain's default reporter logs the fatal cause to stdout. Write it to stderr instead: the
@@ -144,5 +144,5 @@ Effect.gen(function* () {
       process.stderr.write(Cause.pretty(cause) + "\n")
     }),
   ),
-  NodeRuntime.runMain({ disableErrorReporting: true }),
+  runMain({ disableErrorReporting: true }),
 )

@@ -757,7 +757,9 @@ test("preserves sibling catalogs through location preload, branch, shell, and we
 
   try {
     // A live event may arrive before any location reads have populated this key.
-    emit({ type: "shell.created", location, data: { info: shell } })
+    emit({ type: "shell.created", location, data: { info: { ...shell, status: "queued", time: { queued: 0 } } } })
+    expect(setup.data.shell.get(shell.id)).toMatchObject({ status: "queued", time: { queued: 0 } })
+    emit({ type: "shell.started", location, data: { info: shell } })
     expect(setup.data.shell.get(shell.id)).toMatchObject(shell)
     const first = setup.data.shell.get(shell.id)
     await Promise.all([setup.data.location.reference.sync(), setup.data.location.vcs.sync()])

@@ -73,6 +73,10 @@ const QUESTION_CANCELLED_FEEDBACK =
 const PERMISSION_REJECTED_FEEDBACK =
   "This non-interactive run cannot ask the user for permission, so the request was rejected. Continue without this action."
 
+// After a signal, an in-flight admission gets this long to settle before it is
+// aborted, so a stuck transport cannot block exit. Mutable for tests.
+export const admissionGrace = { ms: 5_000 }
+
 export async function runNonInteractivePrompt(input: Input) {
   const controller = new AbortController()
   const stream = input.client.event.subscribe({ signal: controller.signal })[Symbol.asyncIterator]()
@@ -86,6 +90,7 @@ export async function runNonInteractivePrompt(input: Input) {
   const renderedReasoning = new Map<string, string>()
   const renderedTools = new Set<string>()
   let submitted = false
+  let admitted = false
   let promoted = false
   let emittedError = false
   let permissionRejected = false
@@ -95,6 +100,7 @@ export async function runNonInteractivePrompt(input: Input) {
   let prePromotionError: { message: string; [key: string]: unknown } | undefined
   let finalizing = false
   let admission: AbortController | undefined
+  let grace: ReturnType<typeof setTimeout> | undefined
   let pendingStep: { timestamp: number; part: Record<string, unknown>; label: string } | undefined
 
   const emit = (type: string, timestamp: number, data: Record<string, unknown>) => {
@@ -677,13 +683,15 @@ export async function runNonInteractivePrompt(input: Input) {
   }
 
   const interrupt = () => {
-    if (interrupted) process.exit(130)
+    if (interrupted) return
     interrupted = true
     process.exitCode = 130
-    admission?.abort()
+    grace = setTimeout(() => admission?.abort(), admissionGrace.ms)
+    grace.unref?.()
     void input.client.session.interrupt({ sessionID: input.sessionID }).catch(() => {})
   }
   process.on("SIGINT", interrupt)
+  process.on("SIGTERM", interrupt)
 
   let completed: Promise<void> | undefined
   try {
@@ -733,8 +741,8 @@ export async function runNonInteractivePrompt(input: Input) {
         if (interrupted || emittedError) return undefined
         throw error
       })
-    admission = undefined
     if (!response) return
+    admitted = true
     if (interrupted) await input.client.session.interrupt({ sessionID: input.sessionID }).catch(() => {})
 
     const [permissions, forms, globals] = await Promise.all([
@@ -781,10 +789,24 @@ export async function runNonInteractivePrompt(input: Input) {
       if (!emit("error", Date.now(), { error })) UI.error(error.message)
     }
   } finally {
-    process.off("SIGINT", interrupt)
     controller.abort()
-    if (input.compatibility === "v1") await stream.return?.(undefined).catch(() => {})
-    else void stream.return?.(undefined).catch(() => {})
+    clearTimeout(grace)
+    try {
+      if (interrupted) {
+        // An interrupt acknowledges the request, not cleanup. Admission must
+        // settle first so a late prompt cannot start after this final wait.
+        await input.client.session.interrupt({ sessionID: input.sessionID })
+        await input.client.session.wait({ sessionID: input.sessionID })
+        if (submitted && !admitted && !promoted)
+          throw new Error("Prompt admission outcome unknown; session cleanup unconfirmed")
+        emit("session_cancelled", Date.now(), {})
+      }
+    } finally {
+      process.off("SIGINT", interrupt)
+      process.off("SIGTERM", interrupt)
+      if (input.compatibility === "v1") await stream.return?.(undefined).catch(() => {})
+      else void stream.return?.(undefined).catch(() => {})
+    }
   }
 }
 

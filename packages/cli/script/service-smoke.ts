@@ -79,9 +79,7 @@ try {
   if (!winner || !loser) throw new Error("Compiled contenders did not elect one registered owner")
   if (!(await exitsWithin(loser, 10_000))) throw new Error("Losing compiled contender did not exit")
 
-  await Effect.runPromise(
-    Service.stop({ file: registration }).pipe(Effect.provide(NodeFileSystem.layer)),
-  )
+  await Effect.runPromise(Service.stop({ file: registration }).pipe(Effect.provide(NodeFileSystem.layer)))
   if (!(await exitsWithin(winner, 10_000))) throw new Error("Compiled service did not stop")
   for (let attempt = 0; attempt < 200 && (await Bun.file(registration).exists()); attempt++) await Bun.sleep(25)
   if (await Bun.file(registration).exists()) throw new Error("Compiled service registration was not removed")
@@ -106,8 +104,9 @@ if (failure)
   })
 
 function spawnService() {
-  const process = Bun.spawn([binary, "serve", "--service"], { env, stdout: "ignore", stderr: "pipe" })
+  const process = Bun.spawn([binary, "serve", "--service"], { env, stdout: "pipe", stderr: "pipe" })
   processes.push(process)
+  errors.push(new Response(process.stdout).text())
   errors.push(new Response(process.stderr).text())
   return process
 }
@@ -120,6 +119,8 @@ async function waitForRegistration() {
       (file) => file === "service.json" || (file.startsWith("service-") && file.endsWith(".json")),
     )
     if (file) return path.join(directory, file)
+    if (processes.every((child) => child.exitCode !== null))
+      throw new Error(`Compiled services exited before registration: ${processes.map((child) => child.exitCode)}`)
     await Bun.sleep(25)
   }
   throw new Error("Compiled service did not publish registration")

@@ -13,3 +13,6 @@ cores = 2
 timeout_minutes = 60
 capture_results = true
 artifact_retention_days = 14
+
+[ci.workflow_templates]
+".github/workflows/test.yml" = ".simit/templates/test.yml"

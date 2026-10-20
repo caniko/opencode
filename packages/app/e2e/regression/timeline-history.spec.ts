@@ -114,9 +114,33 @@ test.describe("timeline history", () => {
       await expect
         .poll(async () => {
           const next = await visibleTimeline(page)
-          return held.length > 0 || (next.signature !== state.signature && next.covered)
+          return {
+            ready: held.length > 0 || (next.signature !== state.signature && next.covered),
+            scrollTop: next.scrollTop,
+            covered: next.covered,
+            mountedAbove: next.mountedAbove,
+            previousScrollTop: state.scrollTop,
+            delta: state.mountedAbove,
+            loads,
+            unseenParts: expectedParts.filter((id) => !seenParts.has(id)),
+            unseenMessages: expectedMessages.filter((id) => !seenMessages.has(id)),
+          }
         })
-        .toBe(true)
+        .toMatchObject({ ready: true })
+        .catch(async (error) => {
+          await test.info().attach("timeline-paging-state", {
+            contentType: "application/json",
+            body: JSON.stringify({
+              previous: state,
+              current: await visibleTimeline(page),
+              loads,
+              held: held.length,
+              unseenParts: expectedParts.filter((id) => !seenParts.has(id)),
+              unseenMessages: expectedMessages.filter((id) => !seenMessages.has(id)),
+            }),
+          })
+          throw error
+        })
     }
 
     expect(expectedParts.filter((id) => !seenParts.has(id))).toEqual([])

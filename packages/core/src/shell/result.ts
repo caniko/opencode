@@ -5,6 +5,8 @@ import type { Shell } from "@opencode/schema/shell"
 export type Result = {
   info: Shell.Info
   capture: { output: string; truncated: boolean } | undefined
+  // Entered native work exited without matching completion proof.
+  reconciling?: true
 }
 
 type Output = { output: string; truncated: boolean; exit?: number; signal?: string; timeout?: boolean }
@@ -46,11 +48,12 @@ export function notification(input: {
   shellID: string
   jobID?: string
   command: string
-  state: "completed" | "cancelled" | "error"
+  state: "completed" | "cancelled" | "error" | "reconciling"
   text: string
   output?: Output
 }) {
   return {
+    ...(input.state === "cancelled" || input.state === "reconciling" ? { resume: false } : {}),
     text: `<shell id="${input.jobID ?? input.shellID}" state="${input.state}" command="${input.command}">\n${input.text}\n</shell>`,
     metadata: {
       source: "shell",
@@ -64,8 +67,9 @@ export function notification(input: {
 
 export function userNotification(result: Result) {
   const captured = output(result)
-  const status =
-    result.info.status === "killed"
+  const status = result.reconciling
+    ? result.info.error
+    : result.info.status === "killed"
       ? "Cancelled"
       : captured.exit === 0
         ? undefined
@@ -73,7 +77,7 @@ export function userNotification(result: Result) {
   const message = notification({
     shellID: result.info.id,
     command: result.info.command,
-    state: result.info.status === "killed" ? "cancelled" : "completed",
+    state: result.reconciling ? "reconciling" : result.info.status === "killed" ? "cancelled" : "completed",
     text: [captured.output, status].filter((item) => item !== undefined && item !== "").join("\n\n"),
     output: captured,
   })

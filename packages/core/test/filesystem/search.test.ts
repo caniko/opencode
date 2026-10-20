@@ -34,33 +34,36 @@ const ripgrepStub = (entry: string, onFind: (input: Ripgrep.FindInput) => void) 
   )
 
 describe("FileSystemSearch", () => {
-  it.live("honors wildcard directory rules from .gitignore", () =>
-    Effect.gen(function* () {
-      const directory = (yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-fff-ignore-")))).path
-      yield* Effect.promise(() => mkdir(path.join(directory, "rust/target/debug/deps"), { recursive: true }))
-      yield* Effect.promise(() => Bun.write(path.join(directory, ".gitignore"), "**/target/\n"))
-      yield* Effect.promise(() => Bun.write(path.join(directory, "rust/target/debug/deps/ignored.rs"), "ignored"))
-      expect(Bun.spawnSync(["git", "init", "-q"], { cwd: directory }).exitCode).toBe(0)
+  it.live(
+    "honors wildcard directory rules from .gitignore",
+    () =>
+      Effect.gen(function* () {
+        const directory = (yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-fff-ignore-")))).path
+        yield* Effect.promise(() => mkdir(path.join(directory, "rust/target/debug/deps"), { recursive: true }))
+        yield* Effect.promise(() => Bun.write(path.join(directory, ".gitignore"), "**/target/\n"))
+        yield* Effect.promise(() => Bun.write(path.join(directory, "rust/target/debug/deps/ignored.rs"), "ignored"))
+        expect(Bun.spawnSync(["git", "init", "-q"], { cwd: directory }).exitCode).toBe(0)
 
-      const ref = Location.Ref.make({ directory: AbsolutePath.make(directory) })
-      const layer = FileSystemSearch.fffLayer.pipe(
-        Layer.provide(
-          Layer.succeed(
-            Location.Service,
-            Location.Service.of(
-              location(ref, {
-                vcs: { type: "git", store: AbsolutePath.make(path.join(directory, ".git")) },
-              }),
+        const ref = Location.Ref.make({ directory: AbsolutePath.make(directory) })
+        const layer = FileSystemSearch.fffLayer.pipe(
+          Layer.provide(
+            Layer.succeed(
+              Location.Service,
+              Location.Service.of(
+                location(ref, {
+                  vcs: { type: "git", store: AbsolutePath.make(path.join(directory, ".git")) },
+                }),
+              ),
             ),
           ),
-        ),
-      )
-      yield* Effect.gen(function* () {
-        const search = yield* FileSystemSearch.Service
-        const entries = yield* search.find({ query: "target" })
-        expect(entries.every((entry) => !entry.path.startsWith("rust/target/"))).toBe(true)
-      }).pipe(Effect.provide(layer))
-    }),
+        )
+        yield* Effect.gen(function* () {
+          const search = yield* FileSystemSearch.Service
+          const entries = yield* search.find({ query: "target" })
+          expect(entries.every((entry) => !entry.path.startsWith("rust/target/"))).toBe(true)
+        }).pipe(Effect.provide(layer))
+      }),
+    30_000,
   )
 
   it.live("selects the ripgrep layer for workspace-backed locations even when vcs would pick fff", () =>

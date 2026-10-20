@@ -6,11 +6,127 @@ import { Integration } from "@opencode/core/integration"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect"
 import { SessionSchema } from "@opencode/core/session/schema"
+import { SessionMessage } from "@opencode/core/session/message"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Job.node, KV.node])))
 
 describe("Job", () => {
+  it.live("returns typed submission backpressure without displacing accepted jobs", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const accepted = yield* Effect.forEach(Array.from({ length: Job.ACTIVE_LIMIT }), () =>
+        jobs.start({
+          type: "shell",
+          queued: true,
+          run: Effect.never,
+        }),
+      )
+      expect(yield* jobs.start({ type: "shell", queued: true, run: Effect.never }).pipe(Effect.flip)).toMatchObject({
+        _tag: "Job.CapacityError",
+        retryAfterMs: 250,
+      })
+      expect(yield* jobs.get(accepted[0]!.id)).toMatchObject({ status: "queued" })
+      yield* jobs.cancel(accepted[0]!.id)
+      const retry = yield* jobs.start({ type: "shell", queued: true, run: Effect.never })
+      expect(retry.status).toBe("queued")
+      yield* Effect.forEach([...accepted.slice(1), retry], (job) => jobs.cancel(job.id))
+    }),
+  )
+
+  it.live("does not publish a cancelled outcome before producer cleanup finishes", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const entered = yield* Deferred.make<void>()
+      const cleaning = yield* Deferred.make<void>()
+      const cleaned = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "test",
+        run: Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(cleaned)))),
+        ),
+      })
+      yield* Deferred.await(entered)
+      const cancelled = yield* jobs.cancel(job.id).pipe(Effect.forkScoped)
+      yield* Deferred.await(cleaning)
+      expect(yield* jobs.wait({ id: job.id, timeout: 0 })).toMatchObject({ timedOut: true })
+      yield* Deferred.succeed(cleaned, undefined)
+      expect(yield* Fiber.join(cancelled)).toMatchObject({ status: "cancelled" })
+      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({ status: "cancelled" })
+    }),
+  )
+
+  it.live("durably publishes queued work before preparation or admission starts", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const admitted = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<string>()
+      const observed = yield* Deferred.make<void>()
+      const id = "job_queued_before_admission"
+      const job = yield* jobs.start({
+        id,
+        type: "shell",
+        queued: true,
+        recovery: {
+          kind: "shell",
+          sessionID: SessionSchema.ID.make("ses_queue_owner"),
+          shellID: "sh_waiting",
+          command: "queued command",
+        },
+        run: (started) =>
+          Effect.gen(function* () {
+            expect(yield* jobs.get(id)).toMatchObject({ status: "queued" })
+            expect((yield* jobs.pendingBackground).find((entry) => entry.id === id)).toMatchObject({ status: "queued" })
+            yield* Deferred.succeed(observed, undefined)
+            yield* Deferred.await(admitted)
+            yield* started
+            return yield* Deferred.await(finish)
+          }),
+      })
+      yield* Deferred.await(observed)
+      expect(job).toMatchObject({ id, status: "queued" })
+      expect(job.executed_at).toBeUndefined()
+      expect(yield* jobs.wait({ id, timeout: 0 })).toMatchObject({ timedOut: true, info: { status: "queued" } })
+      yield* jobs.background(id)
+      yield* Deferred.succeed(admitted, undefined)
+      yield* jobs.get(id).pipe(Effect.repeat({ until: (info) => info?.status === "running" }))
+      expect((yield* jobs.get(id))?.executed_at).toBeNumber()
+      yield* Deferred.succeed(finish, "done")
+      expect((yield* jobs.wait({ id })).info).toMatchObject({ status: "completed", output: "done" })
+    }),
+  )
+
+  it.live("cancels queued work without starting its payload", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const admitted = yield* Deferred.make<void>()
+      const payload = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "shell",
+        queued: true,
+        run: (started) =>
+          Deferred.await(admitted).pipe(
+            Effect.andThen(started),
+            Effect.andThen(Deferred.succeed(payload, undefined)),
+            Effect.as("must not execute"),
+          ),
+      })
+      expect(yield* jobs.cancel(job.id)).toMatchObject({ status: "cancelled" })
+      yield* Deferred.succeed(admitted, undefined)
+      expect(yield* Deferred.isDone(payload)).toBe(false)
+      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({ status: "cancelled" })
+    }),
+  )
+
+  it.live("settles preparation failures directly from queued", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const job = yield* jobs.start({ type: "shell", queued: true, run: Effect.fail(new Error("preparation refused")) })
+      expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({ status: "error", error: "preparation refused" })
+    }),
+  )
+
   it.live("tracks process-local work through explicit observation", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service
@@ -105,6 +221,262 @@ describe("Job", () => {
         status: "completed",
         output: "original output",
       })
+    }),
+  )
+
+  it.live("deduplicates accepted queued requests through completion and rejects conflicting payloads", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const release = yield* Deferred.make<void>()
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_queued_identity"),
+        shellID: "sh_queued_identity",
+        command: "printf original",
+        request: {
+          cwd: "/workspace",
+          shell: "/bin/sh",
+          timeout: 50,
+          queueTimeout: 1_000,
+          background: true,
+          environment: "project" as const,
+          messageID: SessionMessage.ID.make("msg_queued_identity"),
+          toolCallID: "call_queued_identity",
+        },
+      }
+      const job = yield* jobs.start({
+        id: "job_queued_identity",
+        type: "shell",
+        queued: true,
+        recovery,
+        run: Deferred.await(release).pipe(Effect.as("original")),
+      })
+      const retry = () =>
+        jobs.start({
+          id: job.id,
+          type: "shell",
+          queued: true,
+          recovery: { ...recovery },
+          run: Effect.die("Accepted work must not be dispatched again"),
+        })
+      expect(yield* retry()).toEqual(job)
+      for (const changed of [
+        { ...recovery, command: "printf changed" },
+        { ...recovery, request: { ...recovery.request, timeout: 100 } },
+      ]) {
+        expect(
+          yield* jobs
+            .start({
+              id: job.id,
+              type: "shell",
+              queued: true,
+              recovery: changed,
+              run: Effect.die("Conflicting work must not execute"),
+            })
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "Job.ConflictError", id: job.id })
+      }
+      yield* Deferred.succeed(release, undefined)
+      const completed = (yield* jobs.wait({ id: job.id })).info!
+      expect(completed).toMatchObject({ status: "completed", output: "original" })
+      expect(yield* retry()).toEqual(completed)
+      expect(
+        yield* jobs
+          .start({
+            id: job.id,
+            type: "different",
+            queued: true,
+            recovery,
+            run: Effect.die("Conflicting completed work must not execute"),
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "Job.ConflictError", id: job.id })
+    }),
+  )
+
+  it.live("rejects oversized durable requests without accepting work", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      expect(
+        yield* jobs
+          .start({
+            id: "job_oversized",
+            type: "shell",
+            queued: true,
+            recovery: {
+              kind: "shell",
+              sessionID: SessionSchema.ID.make("ses_oversized"),
+              shellID: "sh_oversized",
+              command: "x".repeat(65_537),
+            },
+            run: Effect.die("Oversized work must not execute"),
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "Job.PayloadError", limit: 65_536 })
+      expect(yield* jobs.get("job_oversized")).toBeUndefined()
+      expect(yield* jobs.pendingBackground).toEqual([])
+    }),
+  )
+
+  it.live("retains unresolved request identity across restart and notification acknowledgment", () =>
+    Effect.gen(function* () {
+      const kv = yield* KV.Service
+      const scope = yield* Scope.make()
+      const previous = yield* Job.make.pipe(Scope.provide(scope))
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_reconciling"),
+        shellID: "sh_reconciling",
+        command: "unverified side effect",
+        request: {
+          cwd: "/workspace",
+          shell: "/bin/sh",
+          timeout: 100,
+          background: true,
+          environment: "project" as const,
+          messageID: SessionMessage.ID.make("msg_reconciling"),
+          toolCallID: "call_reconciling",
+        },
+      }
+      const job = yield* previous.start({
+        id: recovery.shellID,
+        type: "shell",
+        queued: true,
+        recovery,
+        run: Effect.never,
+      })
+      yield* Scope.close(scope, Exit.void)
+      const restarted = yield* Job.make
+      const marker = (yield* restarted.pendingBackground)[0]!
+      for (const status of ["queued", "running", "cancelling"] as const) {
+        yield* kv.set(`job.background/${job.notificationID}`, { ...marker, status })
+        expect(yield* restarted.get(job.id)).toMatchObject({ status: "reconciling" })
+      }
+      expect(yield* restarted.cancel(job.id)).toMatchObject({ status: "reconciling" })
+      expect(yield* restarted.wait({ id: job.id })).toMatchObject({ info: { status: "reconciling" }, timedOut: false })
+      yield* restarted.completeBackground(job.notificationID!)
+      yield* restarted.completeBackground(job.notificationID!)
+      expect(yield* restarted.pendingBackground).toEqual([])
+      expect(yield* kv.get(`job.background/${job.notificationID}`)).toMatchObject({
+        recovery,
+        status: "reconciling",
+        notified: true,
+      })
+      const successor = yield* Job.make
+      for (const queued of [true, false]) {
+        expect(
+          yield* successor.start({
+            id: job.id,
+            type: "shell",
+            queued,
+            recovery,
+            run: Effect.die("Unknown work must not be dispatched again"),
+          }),
+        ).toMatchObject({ id: job.id, status: "reconciling" })
+        expect(
+          yield* successor
+            .start({
+              id: job.id,
+              type: "shell",
+              queued,
+              recovery: { ...recovery, command: "different side effect" },
+              run: Effect.die("Conflicting work must not execute"),
+            })
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "Job.ConflictError", id: job.id })
+      }
+    }),
+  )
+
+  it.live("settles unproven entered work as reconciling without completion or replay", () =>
+    Effect.gen(function* () {
+      const kv = yield* KV.Service
+      const jobs = yield* Job.Service
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_unproven"),
+        shellID: "sh_unproven",
+        command: "entered side effect",
+        request: {
+          cwd: "/workspace",
+          shell: "/bin/sh",
+          timeout: 100,
+          background: true,
+          environment: "project" as const,
+          messageID: SessionMessage.ID.make("msg_unproven"),
+          toolCallID: "call_unproven",
+        },
+      }
+      const job = yield* jobs.start({
+        id: recovery.shellID,
+        type: "shell",
+        queued: true,
+        recovery,
+        run: (started) => started.pipe(Effect.andThen(new Job.ReconcilingError({ message: "proof missing" }))),
+      })
+      const settled = (yield* jobs.wait({ id: job.id })).info
+      expect(settled).toMatchObject({ status: "reconciling", error: "proof missing" })
+      expect(settled?.executed_at).toBeNumber()
+      expect(settled?.completed_at).toBeUndefined()
+      yield* jobs.completeBackground(job.notificationID!)
+      expect(yield* kv.get(`job.background/${job.notificationID}`)).toMatchObject({
+        recovery,
+        status: "reconciling",
+        notified: true,
+      })
+      expect(
+        ((yield* kv.get(`job.background/${job.notificationID}`)) as { time: Record<string, number> }).time.completed,
+      ).toBeUndefined()
+      expect(
+        yield* jobs.start({
+          id: job.id,
+          type: "shell",
+          queued: true,
+          recovery,
+          run: Effect.die("Unproven work must not be dispatched again"),
+        }),
+      ).toMatchObject({ id: job.id, status: "reconciling" })
+    }),
+  )
+
+  it.live("counts acknowledged unresolved requests against the queue bound after restart", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const previous = yield* Job.make.pipe(Scope.provide(scope))
+      const accepted = yield* Effect.forEach(Array.from({ length: Job.ACTIVE_LIMIT }), (_, index) =>
+        previous.start({
+          id: `sh_reconciling_${index}`,
+          type: "shell",
+          queued: true,
+          recovery: {
+            kind: "shell",
+            sessionID: SessionSchema.ID.make("ses_reconciling_capacity"),
+            shellID: `sh_reconciling_${index}`,
+            command: "unverified work",
+            request: {
+              cwd: "/workspace",
+              shell: "/bin/sh",
+              timeout: 100,
+              background: true,
+              environment: "project",
+              messageID: SessionMessage.ID.make("msg_reconciling_capacity"),
+              toolCallID: "call_reconciling_capacity",
+            },
+          },
+          run: Effect.never,
+        }),
+      )
+      yield* Scope.close(scope, Exit.void)
+      const restarted = yield* Job.make
+      yield* Effect.forEach(accepted, (job) => restarted.completeBackground(job.notificationID!))
+      expect(yield* restarted.pendingBackground).toEqual([])
+      const successor = yield* Job.make
+      expect(
+        yield* successor
+          .start({ type: "shell", queued: true, run: Effect.die("Overflow must not execute") })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "Job.CapacityError" })
+      expect(yield* successor.get(accepted[0]!.id)).toMatchObject({ status: "reconciling" })
     }),
   )
 

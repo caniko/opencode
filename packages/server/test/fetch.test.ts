@@ -253,6 +253,13 @@ it.live(
   "explains how to recover when both OpenAI OAuth callback ports are busy",
   () =>
     Effect.gen(function* () {
+      const warnings: string[] = []
+      const onWarning = (warning: Error) => {
+        if (warning.name === "MaxListenersExceededWarning" && warning.message.includes("listening listeners"))
+          warnings.push(warning.message)
+      }
+      process.on("warning", onWarning)
+      yield* Effect.addFinalizer(() => Effect.sync(() => process.off("warning", onWarning)))
       yield* occupy(1455)
       yield* occupy(1457)
       const handler = yield* ServerFetch.make(options)
@@ -265,6 +272,7 @@ it.live(
           "OpenAI browser login needs local port 1455 or 1457, but both are already in use. Stop the processes using those ports or choose ChatGPT Pro/Plus (headless), then try again.",
         kind: "integration_authorization",
       })
+      expect(warnings).toEqual([])
     }),
   // Real retries wait 18 * 200 ms; startup and scoped cleanup also count toward the deadline.
   { timeout: 10_000 },

@@ -31,11 +31,20 @@ const environment = {
   OPENCODE_CONFIG: undefined,
   OPENCODE_CONFIG_CONTENT: undefined,
   TMPDIR: temporary,
-  ...(process.platform === "win32" ? { USERPROFILE: home, TMP: temporary, TEMP: temporary } : {}),
+  // Unix fixtures use POSIX commands, not the developer's login-shell syntax.
+  ...(process.platform === "win32" ? { USERPROFILE: home, TMP: temporary, TEMP: temporary } : { SHELL: "/bin/sh" }),
 }
 
 const child = Bun.spawn({
-  cmd: [process.execPath, "test", "--only-failures", ...process.argv.slice(2)],
+  cmd: [
+    process.execPath,
+    "test",
+    "--only-failures",
+    ...(process.env.OPENCODE_TEST_JUNIT
+      ? ["--reporter=junit", `--reporter-outfile=${process.env.OPENCODE_TEST_JUNIT}`]
+      : []),
+    ...process.argv.slice(2),
+  ],
   env: environment,
   stdin: "inherit",
   stdout: "inherit",

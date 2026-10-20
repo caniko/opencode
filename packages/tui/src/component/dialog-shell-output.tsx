@@ -37,7 +37,7 @@ export function DialogShellOutput(props: { shell: ShellInfo; location: LocationR
     let timer: ReturnType<typeof setTimeout> | undefined
 
     const load = async () => {
-      if (untrack(info).status === "running") {
+      if (untrack(info).status === "queued" || untrack(info).status === "running") {
         const current = await client.api.shell.get({ id, location })
         if (disposed) return false
         setInfo(current.data)
@@ -81,7 +81,9 @@ export function DialogShellOutput(props: { shell: ShellInfo; location: LocationR
   })
 
   const status = () => {
+    if (info().status === "queued") return "Queued"
     if (info().status === "running") return "Running"
+    if (info().status === "failed") return "Failed"
     if (info().status === "timeout") return "Timed out"
     if (info().status === "killed") return "Killed"
     return info().exit === undefined ? "Exited" : `Exited · code ${info().exit}`
@@ -126,11 +128,14 @@ export function DialogShellOutput(props: { shell: ShellInfo; location: LocationR
       >
         <text fg={theme.text.base} wrapMode="word">
           {text() ||
-            (output() === undefined
-              ? "Loading output…"
-              : "No captured output. Output redirected to files is not shown here.")}
+            (info().status === "queued"
+              ? "Waiting for resources. Command has not started."
+              : output() === undefined
+                ? "Loading output…"
+                : "No captured output. Output redirected to files is not shown here.")}
         </text>
       </scrollbox>
+      <Show when={info().error}>{(message) => <text fg={theme.text.feedback.error.base}>{message()}</text>}</Show>
       <Show when={error()}>
         <text fg={theme.text.feedback.error.base}>{error()}</text>
       </Show>

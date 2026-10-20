@@ -11,17 +11,39 @@ async function draft(page: Page) {
 }
 
 async function expectCaretVisible(input: Locator) {
+  const state = () =>
+    input.evaluate((element) => {
+      const selection = window.getSelection()
+      const state = {
+        collapsed: selection?.isCollapsed,
+        rangeCount: selection?.rangeCount,
+        anchorInside: !!selection && element.contains(selection.anchorNode),
+        anchorNode: selection?.anchorNode?.nodeName,
+        anchorOffset: selection?.anchorOffset,
+      }
+      if (!selection?.isCollapsed || !selection.rangeCount || !state.anchorInside) return { ...state, visible: false }
+      const caret = selection.getRangeAt(0).getBoundingClientRect()
+      const scroller = element.closest("[data-scrollable]") ?? element
+      const viewport = scroller.getBoundingClientRect()
+      return {
+        ...state,
+        caret: caret.toJSON(),
+        viewport: viewport.toJSON(),
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        visible: caret.height > 0 && caret.top >= viewport.top - 1 && caret.bottom <= viewport.bottom + 1,
+      }
+    })
   await expect
-    .poll(() =>
-      input.evaluate((element) => {
-        const selection = window.getSelection()
-        if (!selection?.isCollapsed || !selection.rangeCount || !element.contains(selection.anchorNode)) return false
-        const caret = selection.getRangeAt(0).getBoundingClientRect()
-        const viewport = (element.closest("[data-scrollable]") ?? element).getBoundingClientRect()
-        return caret.height > 0 && caret.top >= viewport.top - 1 && caret.bottom <= viewport.bottom + 1
-      }),
-    )
-    .toBe(true)
+    .poll(state)
+    .toMatchObject({ visible: true })
+    .catch(async (error) => {
+      await test.info().attach("composer-caret-state", {
+        contentType: "application/json",
+        body: JSON.stringify(await state()),
+      })
+      throw error
+    })
 }
 
 test("keeps a 25000-line crash report editable in a new session", async ({ page }) => {
