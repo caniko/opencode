@@ -78,6 +78,11 @@ export const SettingsWorkspaces: Component<{
     enabled: serverSDK.connection.status() === "connected",
     refetchOnMount: true,
   }))
+  // Activating the panel discovers changes even when hover already cached its inventory.
+  createEffect(() => {
+    if (props.projectID && serverSDK.connection.status() === "connected")
+      void server.ctx.sync.worktrees.refresh(props.projectID)
+  })
   const inventory = createMemo(() => (projectQuery.isPending ? [] : (projectQuery.data ?? [])))
   const workspaces = createMemo(() => workspaceInventory(inventory()))
   const projects = createMemo(() => inventory().filter((project) => managedWorkspaceDirectories(project).length > 0))
