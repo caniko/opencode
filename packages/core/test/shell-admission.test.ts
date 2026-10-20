@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test"
-import path from "node:path"
-import { mkdtemp, rm } from "node:fs/promises"
-import os from "node:os"
-import { Deferred, Effect, Fiber, Layer } from "effect"
+import { Deferred, Effect, Layer, Schedule } from "effect"
 import { ChildProcessSpawner } from "effect/unstable/process"
-import { ProcessGovernor } from "@opencode/util/process-governor"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Config } from "@opencode/core/config"
@@ -12,90 +8,73 @@ import { Environment } from "@opencode/core/environment/index"
 import { Location } from "@opencode/core/location"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Shell } from "@opencode/core/shell"
+import { Job } from "@opencode/core/job"
 import { Global } from "@opencode/util/global"
 import { hostEnvironmentLayer } from "./fixture/environment"
 import { tempGlobalLayer } from "./fixture/global"
 import { tempLocationLayer } from "./fixture/location"
 
-test("explicit admission uses the heavy lane while diagnostics remain ordinary", () => {
-  for (const command of [
-    "amc admission exec --contract tool -- cargo check",
-    "/nix/store/example/bin/amc admission exec --contract tool -- true",
-    "amc --config /example/policy.toml admission exec --contract tool -- true",
-    "amc admission --config /example/policy.toml exec --contract tool -- true",
-  ])
-    expect(ProcessGovernor.classifyShell(command)).toBe("heavy")
-  for (const command of [
-    "amc admission status --json",
-    "amc inspect opencode.service",
-    "amc watch selected.service --seconds 1 --output /example/capture",
-    "amc exec --slice agent-tools.slice --memory-max 1024 --memory-swap-max 0 -- true",
-    "echo amc admission exec",
-    "git status --short --branch",
-  ])
-    expect(ProcessGovernor.classifyShell(command)).toBe("ordinary")
-})
-
-test("six admission submissions cannot consume ordinary diagnostic slots", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "opencode-amc-governor-"))
-  try {
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const governor = ProcessGovernor.make({ ordinary: 6, heavy: 1, dir })
-          const processClass = ProcessGovernor.classifyShell("amc admission exec --contract tool -- true")
-          const running = yield* governor.acquire(processClass)
-          const waiters = []
-          for (let count = 0; count < 5; count++)
-            waiters.push(yield* governor.acquire(processClass).pipe(Effect.forkScoped))
-          yield* Effect.gen(function* () {
-            while ((yield* governor.status()).heavy.queued !== 5) yield* Effect.sleep("5 millis")
-          }).pipe(Effect.timeout("2 seconds"))
-          const diagnostic = yield* governor
-            .acquire(ProcessGovernor.classifyShell("git status"))
-            .pipe(Effect.timeout("1 second"))
-          expect((yield* governor.status()).ordinary.running).toBe(1)
-          yield* diagnostic.release
-          for (const waiter of waiters) yield* Fiber.interrupt(waiter)
-          yield* running.release
-        }),
-      ),
-    )
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-}, 5000)
-
-test("V2 shell diagnostics execute while admission waits time out or cancel", async () => {
+test("native admission waiters do not occupy lifetime slots needed by control calls", async () => {
+  if (process.platform === "win32") return
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const shell = yield* Shell.Service
-        const lease = yield* ProcessGovernor.acquire("heavy")
-        yield* Effect.addFinalizer(() => lease.release)
-        const waitForQueue = Effect.gen(function* () {
-          while ((yield* ProcessGovernor.status()).heavy.queued !== 1) yield* Effect.sleep("5 millis")
-        }).pipe(Effect.timeout("2 seconds"))
-        const pending = yield* shell
-          .create({ shell: "sh", command: "amc admission exec --contract tool -- true", timeout: 0 })
-          .pipe(Effect.forkScoped)
-        yield* waitForQueue
-        const diagnostic = yield* shell
-          .create({ shell: "sh", command: "printf diagnostic", timeout: 1000 })
-          .pipe(Effect.timeout("2 seconds"))
-        expect(yield* shell.result(diagnostic)).toMatchObject({
-          info: { status: "exited", exit: 0 },
-          capture: { output: "diagnostic" },
-        })
-        yield* Fiber.interrupt(pending)
-        const error = yield* shell
-          .create({ shell: "sh", command: "amc admission exec --contract tool -- true", queueTimeout: 50 })
-          .pipe(Effect.flip, Effect.timeout("2 seconds"))
-        expect(error.message).toContain("Timed out waiting for process governor")
-        expect((yield* ProcessGovernor.status()).heavy.queued).toBe(0)
+        const hooks = yield* PluginHooks.Service
+        yield* hooks.register("shell", "create.before", (event) =>
+          Effect.sync(() => {
+            event.env.OPENCODE_SHELL_NOTIFY_START = event.command.startsWith("printf waiting") ? "1" : undefined
+          }),
+        )
+        const queued = yield* Effect.forEach(Array.from({ length: 8 }), () =>
+          shell.create({ shell: "sh", command: "printf waiting; sleep 30", background: true }),
+        )
+        yield* Effect.forEach(queued, (info) =>
+          shell
+            .output(info.id)
+            .pipe(
+              Effect.repeat({ until: (output) => output.output === "waiting", schedule: Schedule.spaced("5 millis") }),
+            ),
+        ).pipe(Effect.timeout("2 seconds"))
+        expect((yield* shell.list()).every((info) => info.status === "queued")).toBe(true)
+        const control = yield* shell.create({ shell: "sh", command: "printf control", timeout: 1000 })
+        expect((yield* shell.result(control)).capture?.output).toBe("control")
       }).pipe(
         Effect.provide(
-          AppNodeBuilder.build(Shell.node, [
+          AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [
+            Location.node.replace(tempLocationLayer),
+            Global.node.replace(tempGlobalLayer),
+            Config.node.replace(Config.testLayer()),
+            Environment.node.replace(hostEnvironmentLayer),
+          ]),
+        ),
+      ),
+    ),
+  )
+}, 10000)
+
+test("direct shell submissions remain bounded before preparation or native dispatch", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const shell = yield* Shell.Service
+        const hooks = yield* PluginHooks.Service
+        yield* hooks.register("shell", "create.before", () => Effect.never)
+        const queued = yield* Effect.forEach(Array.from({ length: Job.ACTIVE_LIMIT }), () =>
+          shell.create({ shell: "sh", command: "printf must-not-run", background: true }),
+        )
+        const error = yield* shell
+          .create({ shell: "sh", command: "printf overflow", background: true })
+          .pipe(Effect.flip)
+        expect(error.cause).toBeInstanceOf(Job.CapacityError)
+        expect(yield* shell.list()).toHaveLength(Job.ACTIVE_LIMIT)
+        yield* shell.remove(queued[0]!.id)
+        expect((yield* shell.create({ shell: "sh", command: "printf replacement", background: true })).status).toBe(
+          "queued",
+        )
+      }).pipe(
+        Effect.provide(
+          AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [
             Location.node.replace(tempLocationLayer),
             Global.node.replace(tempGlobalLayer),
             Config.node.replace(Config.testLayer()),
@@ -108,13 +87,24 @@ test("V2 shell diagnostics execute while admission waits time out or cancel", as
 }, 10000)
 
 test("queued shells have a cancellable handle and queue waits do not spend execution time", async () => {
+  if (process.platform === "win32") return
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const shell = yield* Shell.Service
-        const leases = yield* Effect.forEach(Array.from({ length: 6 }), () => ProcessGovernor.acquire("ordinary"))
-        yield* Effect.addFinalizer(() => Effect.forEach(leases, (lease) => lease.release))
-        const queued = yield* shell.create({ shell: "sh", command: "printf admitted", timeout: 500, background: true })
+        const hooks = yield* PluginHooks.Service
+        yield* hooks.register("shell", "create.before", (event) =>
+          Effect.sync(() => {
+            event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+          }),
+        )
+        const marker = `printf '\\036%s\\037' "$OPENCODE_SHELL_START_TOKEN" >&2`
+        const queued = yield* shell.create({
+          shell: "sh",
+          command: `sleep .7; ${marker}; printf admitted`,
+          timeout: 500,
+          background: true,
+        })
         expect(queued).toMatchObject({ status: "queued" })
         expect(queued.time.started).toBeUndefined()
         expect(queued.time.queued).toBeNumber()
@@ -122,16 +112,19 @@ test("queued shells have a cancellable handle and queue waits do not spend execu
         expect(yield* shell.output(queued.id)).toMatchObject({ output: "", size: 0 })
         yield* Effect.sleep("550 millis")
         expect((yield* shell.get(queued.id)).status).toBe("queued")
-        const cancelled = yield* shell.create({ shell: "sh", command: "printf must-not-run", background: true })
+        const cancelled = yield* shell.create({
+          shell: "sh",
+          command: `sleep 30; ${marker}; printf must-not-run`,
+          background: true,
+        })
         expect((yield* shell.kill(cancelled.id)).status).toBe("killed")
         expect((yield* shell.list()).map((entry) => entry.id)).not.toContain(cancelled.id)
-        yield* Effect.forEach(leases, (lease) => lease.release)
         const result = yield* shell.result(queued).pipe(Effect.timeout("3 seconds"))
         expect(result).toMatchObject({ info: { status: "exited", exit: 0 }, capture: { output: "admitted" } })
         expect(result.info.time.started).toBeGreaterThan(queued.time.queued ?? 0)
         const retained = yield* shell.create({
           shell: "sh",
-          command: "printf cancellation-evidence; sleep 20",
+          command: `${marker}; printf cancellation-evidence; sleep 20`,
           background: true,
         })
         yield* shell.output(retained.id).pipe(
@@ -143,7 +136,7 @@ test("queued shells have a cancellable handle and queue waits do not spend execu
         expect(yield* shell.result(retained)).toMatchObject({ capture: { output: "cancellation-evidence" } })
       }).pipe(
         Effect.provide(
-          AppNodeBuilder.build(Shell.node, [
+          AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [
             Location.node.replace(tempLocationLayer),
             Global.node.replace(tempGlobalLayer),
             Config.node.replace(Config.testLayer()),
@@ -235,7 +228,6 @@ test("background shells are registered and cancellable during preparation", asyn
         yield* Deferred.await(aborted)
         expect(signals[0]?.aborted).toBe(true)
         expect(yield* shell.list()).toEqual([])
-        expect((yield* ProcessGovernor.status()).ordinary.running).toBe(0)
       }).pipe(
         Effect.provide(
           AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [
@@ -307,7 +299,6 @@ test("native admission readiness, not shim spawn, starts the shell execution clo
         expect((yield* shell.get(cancelled.id)).status).toBe("queued")
         yield* shell.remove(cancelled.id)
         expect(yield* shell.list()).toEqual([])
-        expect((yield* ProcessGovernor.status()).ordinary.running).toBe(0)
       }).pipe(
         Effect.provide(
           AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [

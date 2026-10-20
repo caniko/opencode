@@ -6,7 +6,6 @@ import { describe, expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Schedule, Scope, Stream } from "effect"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { ProcessGovernor } from "@opencode/util/process-governor"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
 import { filesystem } from "@opencode/util/effect/app-node-platform"
@@ -1668,8 +1667,13 @@ describe("ShellTool", () => {
           Effect.gen(function* () {
             const jobs = yield* Job.Service
             const shell = yield* Shell.Service
-            const lease = yield* ProcessGovernor.acquire("heavy")
-            yield* Effect.addFinalizer(() => lease.release)
+            const hooks = yield* PluginHooks.Service
+            yield* hooks.register("shell", "create.before", (event) =>
+              Effect.sync(() => {
+                event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+                event.command = idleCommand
+              }),
+            )
             const result = yield* executeTool(
               registry,
               call(
@@ -1721,8 +1725,13 @@ describe("ShellTool", () => {
           Effect.gen(function* () {
             const jobs = yield* Job.Service
             const shell = yield* Shell.Service
-            const lease = yield* ProcessGovernor.acquire("heavy")
-            yield* Effect.addFinalizer(() => lease.release)
+            const hooks = yield* PluginHooks.Service
+            yield* hooks.register("shell", "create.before", (event) =>
+              Effect.sync(() => {
+                event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+                event.command = idleCommand
+              }),
+            )
             const waiting = yield* executeTool(
               registry,
               call({ command: "amc admission exec --contract tool -- true" }, "call-cancel-queued"),

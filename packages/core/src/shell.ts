@@ -7,7 +7,6 @@ import { Cause, Context, Deferred, Duration, Effect, Exit, Fiber, Latch, Layer, 
 import { ChildProcess } from "effect/unstable/process"
 import { produce } from "immer"
 import { Shell } from "@opencode/schema/shell"
-import { ProcessGovernor } from "@opencode/util/process-governor"
 import { AppProcess } from "@opencode/util/process"
 import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
@@ -25,6 +24,7 @@ import { SessionSchema } from "./session/schema.js"
 import { Config } from "./config.js"
 import { ToolOutput } from "./tool-output.js"
 import { ShellResult } from "./shell/result.js"
+import { Job } from "./job.js"
 
 export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Shell.NotFoundError", {
   id: Shell.ID,
@@ -343,6 +343,15 @@ const layer = () =>
                 command: input.command,
                 cause: new Error("Shell ID already accepted"),
               })
+            if (
+              [...commands.values()].filter(
+                (entry) => entry.info.status === "queued" || entry.info.status === "running",
+              ).length >= Job.ACTIVE_LIMIT
+            )
+              return yield* new AppProcess.AppProcessError({
+                command: input.command,
+                cause: new Job.CapacityError({ retryAfterMs: 250 }),
+              })
             commands.set(id, command)
             yield* bus.publish(Shell.Event.Created, { info })
 
@@ -384,37 +393,6 @@ const layer = () =>
                   )
                   const args = ShellSelect.args(invocation.shell, invocation.command)
                   const waitingSince = Date.now()
-                  const lease = yield* Effect.uninterruptibleMask((restore) =>
-                    Effect.gen(function* () {
-                      const admission = ProcessGovernor.acquire(ProcessGovernor.classifyShell(invocation.command)).pipe(
-                        Effect.catchDefect((cause) =>
-                          Effect.fail(new AppProcess.AppProcessError({ command: invocation.command, cause })),
-                        ),
-                      )
-                      const lease = yield* restore(
-                        !input.queueTimeout
-                          ? admission
-                          : admission.pipe(
-                              Effect.timeoutOrElse({
-                                duration: Duration.millis(input.queueTimeout),
-                                orElse: () =>
-                                  Effect.fail(
-                                    new AppProcess.AppProcessError({
-                                      command: invocation.command,
-                                      cause: new Error("Timed out waiting for process governor"),
-                                    }),
-                                  ),
-                              }),
-                            ),
-                      )
-                      yield* Effect.addFinalizer(() => lease.release)
-                      return lease
-                    }),
-                  )
-                  const guarded = yield* Effect.try({
-                    try: () => ProcessGovernor.handoff(lease, invocation.shell, args, false),
-                    catch: (cause) => new AppProcess.AppProcessError({ command: invocation.command, cause }),
-                  })
                   // A trusted shell adapter may opt into a private, per-invocation
                   // start frame. Spawning that adapter is not workload admission.
                   const startToken = invocation.env.OPENCODE_SHELL_NOTIFY_START === "1" ? randomUUID() : undefined
@@ -423,7 +401,7 @@ const layer = () =>
                   const nativeStarted = Deferred.makeUnsafe<void>()
                   const handle = yield* environment.spawner
                     .spawn(
-                      ChildProcess.make(guarded.command, guarded.args, {
+                      ChildProcess.make(invocation.shell, args, {
                         cwd: invocation.cwd,
                         env: invocation.env,
                         stdin: "ignore",
