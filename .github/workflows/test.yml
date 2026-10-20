@@ -298,6 +298,13 @@ jobs:
       run:
         shell: bash
     steps:
+      # A focused dispatch skips unit tests, so a disabled e2e job must not pass as tested.
+      - name: Reject focused suites without app e2e
+        if: env.E2E_ENABLED != 'true' && github.event_name == 'workflow_dispatch' && contains(fromJSON('["timeline-history", "timeline-benchmark", "composer"]'), inputs.suite)
+        run: |
+          echo "::error::Focused suite '${{ inputs.suite }}' needs app e2e, which is disabled on ${{ github.ref_name }}."
+          exit 1
+
       - name: Checkout repository
         if: env.E2E_ENABLED == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
