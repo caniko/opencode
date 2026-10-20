@@ -67,7 +67,7 @@ export default function NewSessionPage(props: { draftId: string }) {
   })
   createEffect(() => {
     if (!composer.ready()) return
-    model.restoreFocus()
+    untrack(() => model.restoreFocus())
   })
   createEffect(() => {
     if (!composer.ready()) return

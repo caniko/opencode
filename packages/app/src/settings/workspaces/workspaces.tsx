@@ -1,5 +1,5 @@
 import type { Component } from "solid-js"
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { Key } from "@solid-primitives/keyed"
@@ -79,10 +79,15 @@ export const SettingsWorkspaces: Component<{
     refetchOnMount: true,
   }))
   // Activating the panel discovers changes even when hover already cached its inventory.
-  createEffect(() => {
-    if (props.projectID && serverSDK.connection.status() === "connected")
-      void server.ctx.sync.worktrees.refresh(props.projectID)
-  })
+  // Inventory updates replace project metadata, not the active discovery target.
+  createEffect(
+    on(
+      createMemo(() => (serverSDK.connection.status() === "connected" ? props.projectID : undefined)),
+      (projectID) => {
+        if (projectID) void server.ctx.sync.worktrees.refresh(projectID)
+      },
+    ),
+  )
   const inventory = createMemo(() => (projectQuery.isPending ? [] : (projectQuery.data ?? [])))
   const workspaces = createMemo(() => workspaceInventory(inventory()))
   const projects = createMemo(() => inventory().filter((project) => managedWorkspaceDirectories(project).length > 0))
