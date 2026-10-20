@@ -221,8 +221,7 @@ test("ignores an old failed location read after reconnecting", async ({ page }) 
   expect(recovery).toEqual([])
 })
 
-// Relocation: moving the session or creating a worktree. Showing a resolved Location also refreshes its project's
-// worktree inventory (`/api/worktree/refresh`), which is routine discovery, not recovery.
+// Recovery must not move the session or create a worktree; ordinary navigation only reads saved inventory.
 function recoveryRequests(page: Page) {
   const requests: string[] = []
   page.on("request", (request) => {
