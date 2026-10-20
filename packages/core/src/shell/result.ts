@@ -46,12 +46,12 @@ export function notification(input: {
   shellID: string
   jobID?: string
   command: string
-  state: "completed" | "cancelled" | "error"
+  state: "completed" | "cancelled" | "error" | "reconciling"
   text: string
   output?: Output
 }) {
   return {
-    ...(input.state === "cancelled" ? { resume: false } : {}),
+    ...(input.state === "cancelled" || input.state === "reconciling" ? { resume: false } : {}),
     text: `<shell id="${input.jobID ?? input.shellID}" state="${input.state}" command="${input.command}">\n${input.text}\n</shell>`,
     metadata: {
       source: "shell",

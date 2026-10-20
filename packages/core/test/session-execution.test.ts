@@ -398,7 +398,7 @@ describe("SessionExecution lifecycle", () => {
 })
 
 describe("SessionRestart background recovery", () => {
-  it.effect("reports queued intents as interrupted without replay or an unverified cancellation claim", () =>
+  it.effect("retains queued intents in reconciliation without replay or duplicate restart notices", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
       const jobs = yield* Job.Service
@@ -408,7 +408,21 @@ describe("SessionRestart background recovery", () => {
         id: "sh_queued_restart",
         type: "shell",
         queued: true,
-        recovery: { kind: "shell", sessionID, shellID: "sh_queued_restart", command: "queued work" },
+        recovery: {
+          kind: "shell",
+          sessionID,
+          shellID: "sh_queued_restart",
+          command: "queued work",
+          request: {
+            cwd: "/workspace",
+            shell: "/bin/sh",
+            timeout: 100,
+            background: true,
+            environment: "project",
+            messageID: SessionMessage.ID.make("msg_queued_restart"),
+            toolCallID: "call_queued_restart",
+          },
+        },
         run: Effect.never,
       })
       const scope = yield* Scope.make()
@@ -421,17 +435,22 @@ describe("SessionRestart background recovery", () => {
         undefined,
         restarted,
       )
-      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      const restart = Context.get(context, SessionRestart.Service)
+      yield* restart.resumeSuspendedSessions
       expect(drained).toEqual([])
       expect(yield* SessionInbox.list(database.db, sessionID)).toMatchObject([
         {
           payload: {
             text: expect.stringContaining("will not be replayed automatically"),
-            metadata: { source: "shell", shellID: "sh_queued_restart", state: "error" },
+            metadata: { source: "shell", shellID: "sh_queued_restart", state: "reconciling" },
           },
         },
       ])
       expect(yield* restarted.pendingBackground).toEqual([])
+      expect(yield* restarted.get("sh_queued_restart")).toMatchObject({ status: "reconciling" })
+      yield* restart.resumeSuspendedSessions
+      expect(yield* SessionInbox.list(database.db, sessionID)).toHaveLength(1)
+      expect(drained).toEqual([])
     }),
   )
 

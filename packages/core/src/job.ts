@@ -1,6 +1,19 @@
 export * as Job from "./job.js"
 
-import { Array, Cause, Clock, Context, Deferred, Effect, Exit, Layer, Schema, Scope, SynchronizedRef } from "effect"
+import {
+  Array,
+  Cause,
+  Clock,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Result,
+  Schema,
+  Scope,
+  SynchronizedRef,
+} from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Identifier } from "./id/id.js"
@@ -40,7 +53,8 @@ const Background = Schema.Struct({
       description: Schema.String,
     }),
   ]),
-  status: Schema.Literals(["queued", "running", "cancelling", "completed", "error", "cancelled"]),
+  status: Schema.Literals(["queued", "running", "cancelling", "reconciling", "completed", "error", "cancelled"]),
+  notified: Schema.optionalKey(Schema.Boolean),
   output: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
   time: Schema.optionalKey(
@@ -190,6 +204,7 @@ export interface Interface {
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
+  // Acknowledge delivery, not execution: unresolved accepted intents remain durable.
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
 }
 
@@ -199,6 +214,23 @@ function snapshot(job: Active): Info {
   return {
     ...job.info,
     ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}),
+  }
+}
+
+function recoveredInfo(background: Background): Info | undefined {
+  if (background.recovery.kind !== "shell" || !background.recovery.request) return
+  return {
+    id: background.id,
+    type: "shell",
+    title: background.recovery.command,
+    status: isActive(background.status) ? "reconciling" : background.status,
+    started_at: background.time?.submitted ?? 0,
+    executed_at: background.time?.executed,
+    completed_at: background.time?.completed,
+    output: background.output,
+    error: background.error,
+    notificationID: background.notificationID,
+    metadata: { sessionID: background.recovery.sessionID, shellID: background.recovery.shellID },
   }
 }
 
@@ -231,6 +263,8 @@ function decrementSession(input: Map<SessionSchema.ID, number>, sessionID: Sessi
  * Unconsumed results survive the start-to-wait handoff. Foreground block/cancel
  * and non-recoverable wait results enter a 25-entry consumed history. Recoverable
  * wait results stay available for background registration and acknowledgment.
+ * Accepted shell requests without a local owner remain reconciling across restarts;
+ * notice delivery neither proves native cleanup nor authorizes their replay.
  */
 export const make = Effect.gen(function* () {
   const kv = yield* KV.Service
@@ -238,6 +272,17 @@ export const make = Effect.gen(function* () {
     jobs: yield* SynchronizedRef.make(new Map()),
     scope: yield* Scope.Scope,
   }
+
+  const backgrounds = Effect.gen(function* () {
+    const recovered: Background[] = []
+    let after: string | undefined
+    do {
+      const page = yield* kv.scan({ prefix: backgroundPrefix, after })
+      recovered.push(...Array.filterMap(page.entries, (entry) => decodeBackground(entry.value)))
+      after = page.next
+    } while (after)
+    return recovered
+  })
 
   const consume = (id: string, generation: Scope.Closeable) =>
     SynchronizedRef.update(state.jobs, (jobs) => {
@@ -309,8 +354,9 @@ export const make = Effect.gen(function* () {
 
   const get: Interface["get"] = Effect.fn("Job.get")(function* (id) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
-    if (!job) return undefined
-    return snapshot(job)
+    if (job) return snapshot(job)
+    const background = (yield* backgrounds).find((entry) => entry.id === id)
+    return background && recoveredInfo(background)
   })
 
   const markRunning = (id: string, scope: Scope.Closeable) =>
@@ -352,11 +398,26 @@ export const make = Effect.gen(function* () {
             if (existing && isActive(existing.info.status)) {
               return [{ info: snapshot(existing) }, jobs]
             }
+            // ponytail: scan the submission-bounded marker set; add an ID index
+            // here if the queue policy grows beyond the current 128 requests.
+            const durable = input.queued || input.id !== undefined ? yield* backgrounds : []
+            const accepted = durable.find((entry) => entry.id === id)
+            const recovered = accepted && recoveredInfo(accepted)
+            if (accepted && recovered) {
+              if (recovered.type !== input.type || !isDeepStrictEqual(accepted.recovery, input.recovery))
+                return yield* new ConflictError({ id })
+              return [{ info: recovered }, jobs]
+            }
             if (input.queued && input.recovery && Buffer.byteLength(JSON.stringify(input.recovery)) > REQUEST_LIMIT)
               return yield* new PayloadError({ limit: REQUEST_LIMIT })
             if (
               input.queued &&
-              [...jobs.values()].filter((job) => !job.consumed || job.info.notificationID).length >= ACTIVE_LIMIT
+              new Set([
+                ...[...jobs.values()]
+                  .filter((job) => !job.consumed || job.info.notificationID)
+                  .map((job) => job.info.id),
+                ...durable.map((entry) => entry.id),
+              ]).size >= ACTIVE_LIMIT
             )
               return yield* new CapacityError({ retryAfterMs: 250 })
             const scope = yield* Scope.fork(state.scope, "parallel")
@@ -401,7 +462,10 @@ export const make = Effect.gen(function* () {
 
   const wait: Interface["wait"] = Effect.fn("Job.wait")(function* (input) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
-    if (!job) return { timedOut: false }
+    if (!job) {
+      const info = yield* get(input.id)
+      return { ...(info ? { info } : {}), timedOut: false }
+    }
     return yield* Effect.gen(function* () {
       if (!isActive(job.info.status)) return { info: snapshot(job), timedOut: false }
       if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
@@ -539,23 +603,34 @@ export const make = Effect.gen(function* () {
       ? yield* Scope.close(result.scope, Exit.void).pipe(Effect.andThen(settle(id, result.scope, Exit.interrupt())))
       : result.info
     if (result.generation) yield* consume(id, result.generation)
-    return info
+    return info ?? (yield* get(id))
   })
 
-  const pendingBackground: Interface["pendingBackground"] = Effect.gen(function* () {
-    const recovered: Background[] = []
-    let after: string | undefined
-    do {
-      const page = yield* kv.scan({ prefix: backgroundPrefix, after })
-      recovered.push(...Array.filterMap(page.entries, (entry) => decodeBackground(entry.value)))
-      after = page.next
-    } while (after)
-    return recovered
-  }).pipe(Effect.withSpan("Job.pendingBackground"))
+  const pendingBackground: Interface["pendingBackground"] = backgrounds.pipe(
+    Effect.map((entries) => entries.filter((entry) => !entry.notified)),
+    Effect.withSpan("Job.pendingBackground"),
+  )
 
   const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")((notificationID) =>
     SynchronizedRef.updateEffect(state.jobs, (jobs) =>
       Effect.gen(function* () {
+        const background = Result.getOrUndefined(
+          decodeBackground(yield* kv.get(`${backgroundPrefix}${notificationID}`)),
+        )
+        if (
+          background?.recovery.kind === "shell" &&
+          background.recovery.request &&
+          (isActive(background.status) || background.status === "reconciling")
+        ) {
+          // A delivered notice is not native cleanup evidence. Keep the bounded
+          // accepted intent until its outcome can actually be reconciled.
+          yield* kv.set(`${backgroundPrefix}${notificationID}`, {
+            ...background,
+            status: "reconciling",
+            notified: true,
+          })
+          return jobs
+        }
         yield* kv.remove(`${backgroundPrefix}${notificationID}`)
         const entry = [...jobs].find(([, job]) => job.info.notificationID === notificationID)
         if (!entry || isActive(entry[1].info.status)) return jobs

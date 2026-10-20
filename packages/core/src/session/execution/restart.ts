@@ -102,8 +102,9 @@ export const layer = (options?: Options) =>
         background: Job.Background,
         recovery: Extract<Job.Recovery, { kind: "shell" }>,
       ) {
-        const state = Job.isActive(background.status) ? "error" : background.status
-        const text = Job.isActive(background.status)
+        const unresolved = Job.isActive(background.status) || background.status === "reconciling"
+        const state = unresolved ? (recovery.request ? "reconciling" : "error") : background.status
+        const text = unresolved
           ? "The server restarted; this command's execution outcome is unknown. It will not be replayed automatically. Inspect native execution and any side effects before retrying."
           : state === "completed"
             ? (background.output ?? "Command completed")
