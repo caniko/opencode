@@ -43,6 +43,7 @@ const description = (shell?: string) =>
     "Rely on automatic truncation unless filtering the output is more useful.",
     "Commands accept an optional timeout, background commands have no timeout by default.",
     "Background commands return immediately, and you will be notified when they complete.",
+    "Foreground commands that wait for preparation or resources return a queued handle; their execution timeout is preserved.",
   ].join(" ")
 
 export const Input = Schema.Struct({
@@ -260,7 +261,7 @@ export const Plugin = {
                           timeout,
                           shell: selectedShell,
                           background: true,
-                          prepareInBackground: input.background === true,
+                          prepareInBackground: true,
                           queueTimeout: input.queue_timeout,
                           environment: input.environment,
                           metadata: { sessionID: context.sessionID, toolCallID: context.id },
@@ -321,19 +322,31 @@ export const Plugin = {
                 return backgroundResult(info.id, info.file, (yield* jobs.get(job.id))?.status === "queued")
               }
 
-              const result = yield* jobs
-                .block({ id: job.id, sessionID: context.sessionID })
-                .pipe(
-                  Effect.onInterrupt(() =>
-                    jobs
-                      .cancel(job.id)
-                      .pipe(
-                        Effect.andThen(job.notificationID ? jobs.completeBackground(job.notificationID) : Effect.void),
-                      ),
-                  ),
+              const result = yield* Effect.gen(function* () {
+                const ready = yield* shell.started(info.id).pipe(
+                  Effect.catch(() => Effect.void),
+                  Effect.timeoutOption("250 millis"),
                 )
-              if (result?.type === "backgrounded") {
-                yield* shell.timeout(info.id, 0)
+                if (ready._tag === "None") {
+                  const queued = yield* jobs.background(job.id)
+                  if (queued)
+                    return {
+                      type: Job.isActive(queued.status) ? ("queued" as const) : ("finished" as const),
+                      info: queued,
+                    }
+                }
+                return yield* jobs.block({ id: job.id, sessionID: context.sessionID })
+              }).pipe(
+                Effect.onInterrupt(() =>
+                  jobs
+                    .cancel(job.id)
+                    .pipe(
+                      Effect.andThen(job.notificationID ? jobs.completeBackground(job.notificationID) : Effect.void),
+                    ),
+                ),
+              )
+              if (result?.type === "backgrounded" || result?.type === "queued") {
+                if (result.type === "backgrounded" && input.timeout === undefined) yield* shell.timeout(info.id, 0)
                 yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
                 return backgroundResult(info.id, info.file, result.info.status === "queued")
               }
