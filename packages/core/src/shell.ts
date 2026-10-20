@@ -271,7 +271,10 @@ const layer = () =>
       })
 
       const result = Effect.fn("Shell.result")(function* (started: Shell.Info) {
-        const info = yield* wait(started.id).pipe(
+        // Keep the entry: retention may evict it before this waiter resumes, and the
+        // reconciliation outcome must survive that eviction.
+        const command = commands.get(started.id)
+        const info = yield* (command ? Deferred.await(command.done) : wait(started.id)).pipe(
           Effect.catchTag("Shell.NotFoundError", () =>
             Effect.succeed({ ...started, status: "killed" as const, time: { ...started.time, completed: Date.now() } }),
           ),
@@ -293,7 +296,7 @@ const layer = () =>
             : ""
           return { output: `${text || "(no output)"}${notice}`, truncated }
         }).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
-        return { info, capture, ...(commands.get(info.id)?.reconciling ? { reconciling: true as const } : {}) }
+        return { info, capture, ...(command?.reconciling ? { reconciling: true as const } : {}) }
       })
 
       const create = Effect.fn("Shell.create")(function* <E = never, R = never>(
@@ -519,14 +522,14 @@ const layer = () =>
                                     ])
                                     entry = index
                                   }
-                                  // After entry, strip completion proof (at most three exit digits).
+                                  // After entry, strip completion proof (a uint32 exit code, at most ten digits).
                                   // A malformed frame is recorded so it can never settle the result.
                                   const kept: Buffer[] = []
                                   let from = 0
                                   for (let index = data.indexOf(complete!, entry); index !== -1; ) {
                                     const body = index + complete!.length
-                                    const end = data.subarray(body, body + 4).indexOf(31)
-                                    if (end === -1 && data.length - body < 4) {
+                                    const end = data.subarray(body, body + 11).indexOf(31)
+                                    if (end === -1 && data.length - body < 11) {
                                       kept.push(data.subarray(from, index))
                                       pending = data.subarray(index)
                                       return Buffer.concat(kept)
@@ -688,11 +691,8 @@ const layer = () =>
                       if (
                         marker &&
                         final.status === "exited" &&
-                        !(
-                          completions.length === 1 &&
-                          /^[0-9]{1,3}$/.test(completions[0]!) &&
-                          Number(completions[0]) === final.exit
-                        )
+                        // Canonical decimal only: the proof must name exactly this exit code.
+                        !(completions.length === 1 && final.exit !== undefined && completions[0] === String(final.exit))
                       ) {
                         command.reconciling = true
                         return {
@@ -709,11 +709,17 @@ const layer = () =>
                   command.timeout = undefined
                   // The native scope and its output pump have closed. This is
                   // typed nonacceptance, never a retry of a possibly entered payload.
-                  yield* Effect.sleep(
-                    Duration.millis(
-                      input.queueTimeout
-                        ? Math.min(outcome.retryAfterMs, Math.max(0, input.queueTimeout - (Date.now() - waitingSince)))
-                        : outcome.retryAfterMs,
+                  // Backoff after typed nonacceptance is still a native admission wait.
+                  yield* waiting(
+                    Effect.sleep(
+                      Duration.millis(
+                        input.queueTimeout
+                          ? Math.min(
+                              outcome.retryAfterMs,
+                              Math.max(0, input.queueTimeout - (Date.now() - waitingSince)),
+                            )
+                          : outcome.retryAfterMs,
+                      ),
                     ),
                   )
                 }

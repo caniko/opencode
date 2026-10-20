@@ -363,7 +363,8 @@ test("typed nonacceptance preserves the queued shell without a waiting process o
           }),
         )
         const cancelled = yield* shell.create({ shell: "sh", command: "cancelled", background: true })
-        yield* Effect.sleep("100 millis")
+        // The retry backoff is a native admission wait, so foreground callers get a queued handle.
+        yield* shell.stalled(cancelled.id).pipe(Effect.timeout("1 second"))
         expect((yield* shell.get(cancelled.id)).status).toBe("queued")
         yield* shell.kill(cancelled.id)
         expect((yield* shell.get(cancelled.id)).status).toBe("killed")
