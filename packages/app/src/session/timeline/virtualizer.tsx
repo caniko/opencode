@@ -171,6 +171,8 @@ export function createTimelineVirtualizer(input: Input) {
       return rows().length
     },
     getScrollElement: () => listRoot() ?? null,
+    // Core range changes can finish without another native scroll or size delivery.
+    onChange: () => queueMicrotask(() => settleColdBottom()),
     observeElementRect: (instance, callback) => {
       reportRect = callback
       return observeElementRect(instance, (rect) => {
