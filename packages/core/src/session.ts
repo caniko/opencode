@@ -85,6 +85,7 @@ type CreateBaseInput = {
   agent?: Agent.ID
   model?: Model.Ref
   metadata?: SessionSchema.Metadata
+  environmentRequired?: boolean
   permissions?: Permission.Ruleset
 }
 type CreateInput = CreateBaseInput &
@@ -273,6 +274,7 @@ const layer = Layer.effect(
               // Children inherit metadata and permissions the way they inherit
               // location, so host policies that read them treat the family uniformly.
               metadata: input.metadata ?? parent?.metadata,
+              environmentRequired: parent?.environmentRequired === true ? true : input.environmentRequired,
               permissions: input.permissions ?? parent?.permissions,
               model: input.model
                 ? {

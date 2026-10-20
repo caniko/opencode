@@ -41,16 +41,19 @@ for (const tool of ["edit", "write"]) {
   })
 }
 
-// Product regression from 010cd6131e: an empty write renders no file row. Remove `fail` once it is fixed.
-story.fail("empty writes still show a file row", async ({ mount }) => {
-  const root = await mount("current-session-file-changes--file-tool-fallbacks", {
-    args: { tool: "write", empty: true },
+for (const presentation of ["standalone", "grouped", "separate"]) {
+  story(`empty writes still show a file row when ${presentation}`, async ({ mount }) => {
+    const root =
+      presentation === "standalone"
+        ? await mount("current-session-file-changes--file-tool-fallbacks", { args: { tool: "write", empty: true } })
+        : await mount("current-session-file-changes--empty-write", { args: { grouped: presentation === "grouped" } })
+    if (presentation === "standalone") await root.getByRole("button", { name: "Complete file tool" }).click()
+    if (presentation === "grouped") await root.getByRole("button", { name: /^Used \d+ .*Write$/ }).click()
+    const file = root.getByRole("button", { name: /example\.ts/ })
+    await expect(file).toHaveAttribute("aria-expanded", "false")
+    await file.click()
+    await expect(file).toHaveAttribute("aria-expanded", "true")
+    await expect(root.locator('[data-component="file"]')).toBeAttached()
+    await expect(file).toBeVisible()
   })
-  await root.getByRole("button", { name: "Complete file tool" }).click()
-  const file = root.getByRole("button", { name: /example\.ts/ })
-  await expect(file).toHaveAttribute("aria-expanded", "false")
-  await file.click()
-  await expect(file).toHaveAttribute("aria-expanded", "true")
-  await expect(root.locator('[data-component="file"]')).toBeAttached()
-  await expect(file).toBeVisible()
-})
+}

@@ -3,7 +3,7 @@ platform = "github"
 provider = "actions"
 runtime = "nix"
 runner = "ubuntu-24.04"
-nix_builds = [".#opencode", ".#checks.x86_64-linux.browser-connection"]
+nix_builds = [".#opencode", ".#checks.x86_64-linux.browser-connection", ".#checks.x86_64-linux.managed-execution"]
 
 [ci.nix_build]
 only = true
@@ -12,4 +12,7 @@ max_jobs = 1
 cores = 2
 timeout_minutes = 60
 capture_results = true
-artifact_retention_days = 14
+artifact_retention_days = 31
+extra_setup = [
+  "nix run github:caniko/simit/7d6783ab1a99fb675b273e214df77d378e6735ab -- init ci --platform github --ci-provider actions --runtime nix --check --diff",
+]

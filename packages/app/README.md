@@ -46,6 +46,13 @@ bun run test:e2e:built
 bun run test:e2e:built -- --grep "settings"
 ```
 
+Hosted browser qualification checks out the exact candidate and runs each suite
+once, without retries or repeats. Linux requires nonempty passing app,
+service-worker, and Session UI reports with no failures, errors, flakes, or skips.
+First-failure traces, reports, logs, source/runtime bindings, and member hashes
+are retained for 31 days; CI verifies the provider's actual expiry and digest.
+Historical failures remain diagnostic evidence, not acceptance of a successor.
+
 To test an already-running dev server without starting or building a server:
 
 ```bash

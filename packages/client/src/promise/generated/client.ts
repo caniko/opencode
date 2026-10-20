@@ -16,6 +16,15 @@ import type {
   PluginCheckOutput,
   PluginUpdateInput,
   PluginUpdateOutput,
+  SessionExternalInfoOutput,
+  SessionExternalAdmitInput,
+  SessionExternalAdmitOutput,
+  SessionExternalStatusInput,
+  SessionExternalStatusOutput,
+  SessionExternalResumeInput,
+  SessionExternalResumeOutput,
+  SessionExternalStopInput,
+  SessionExternalStopOutput,
   SessionListInput,
   SessionListOutput,
   SessionStatsInput,
@@ -533,6 +542,67 @@ export function make(options: ClientOptions) {
         ),
     },
     session: {
+      external: {
+        info: (requestOptions?: RequestOptions) =>
+          request<SessionExternalInfoOutput>(
+            {
+              method: "GET",
+              path: `/api/session/external`,
+              successStatus: 200,
+              declaredStatuses: [400, 401],
+              empty: false,
+            },
+            requestOptions,
+          ),
+        admit: (input: SessionExternalAdmitInput, requestOptions?: RequestOptions) =>
+          request<SessionExternalAdmitOutput>(
+            {
+              method: "POST",
+              path: `/api/session/external/admit`,
+              body: { key: input["key"], body: input["body"] },
+              successStatus: 200,
+              declaredStatuses: [400, 401, 409],
+              empty: false,
+            },
+            requestOptions,
+          ),
+        status: (input: SessionExternalStatusInput, requestOptions?: RequestOptions) =>
+          request<SessionExternalStatusOutput>(
+            {
+              method: "POST",
+              path: `/api/session/external/status`,
+              body: { key: input["key"], body: input["body"] },
+              successStatus: 200,
+              declaredStatuses: [400, 401, 409],
+              empty: false,
+            },
+            requestOptions,
+          ),
+        resume: (input: SessionExternalResumeInput, requestOptions?: RequestOptions) =>
+          request<SessionExternalResumeOutput>(
+            {
+              method: "POST",
+              path: `/api/session/external/resume`,
+              body: { key: input["key"], body: input["body"], backendGeneration: input["backendGeneration"] },
+              successStatus: 200,
+              declaredStatuses: [400, 401, 409],
+              empty: false,
+            },
+            requestOptions,
+          ),
+        stop: (input: SessionExternalStopInput, requestOptions?: RequestOptions) =>
+          request<SessionExternalStopOutput>(
+            {
+              method: "POST",
+              path: `/api/session/external/stop`,
+              body: { key: input["key"], body: input["body"] },
+              successStatus: 200,
+              declaredStatuses: [400, 401, 409],
+              empty: false,
+            },
+            requestOptions,
+          ),
+      },
       list: (input?: SessionListInput, requestOptions?: RequestOptions) =>
         request<SessionListOutput>(
           {
@@ -585,6 +655,7 @@ export function make(options: ClientOptions) {
               model: input?.["model"],
               location: input?.["location"],
               metadata: input?.["metadata"],
+              environmentRequired: input?.["environmentRequired"],
               permissions: input?.["permissions"],
             },
             successStatus: 200,

@@ -22,6 +22,32 @@ async function expectCaretVisible(input: Locator) {
       }),
     )
     .toBe(true)
+    .catch(async (error) => {
+      await test.info().attach("caret-visibility", {
+        contentType: "application/json",
+        body: JSON.stringify(
+          await input.evaluate((element) => {
+            const selection = window.getSelection()
+            const viewport = element.closest<HTMLElement>("[data-scrollable]") ?? element
+            return {
+              focused: document.activeElement === element,
+              collapsed: selection?.isCollapsed,
+              anchor: selection?.anchorNode?.nodeName,
+              anchorOffset: selection?.anchorOffset,
+              focus: selection?.focusNode?.nodeName,
+              focusOffset: selection?.focusOffset,
+              contained: element.contains(selection?.anchorNode ?? null),
+              caret: selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect().toJSON() : null,
+              viewport: viewport.getBoundingClientRect().toJSON(),
+              scrollTop: viewport.scrollTop,
+              scrollHeight: viewport.scrollHeight,
+              clientHeight: viewport.clientHeight,
+            }
+          }),
+        ),
+      })
+      throw error
+    })
 }
 
 test("keeps a 25000-line crash report editable in a new session", async ({ page }) => {

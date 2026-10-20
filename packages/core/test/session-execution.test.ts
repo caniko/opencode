@@ -14,24 +14,126 @@ import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { SessionExternal } from "@opencode/core/session/external"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionEvent } from "@opencode/core/session/event"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
-import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
+import { SessionExternalTable, SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
+import { SessionEnvironment } from "@opencode/core/session/environment"
 import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Scope } from "effect"
 import { eq } from "drizzle-orm"
+import { createHash } from "node:crypto"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionStore.node,
+      SessionInbox.node,
+      Job.node,
+      KV.node,
+      Session.node,
+      SessionEnvironment.node,
+    ]),
   ),
 )
 
 describe("SessionExecution lifecycle", () => {
+  it.effect(
+    "external Stop settles active owned drains and a cleanup-created child while a personal drain continues",
+    () =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const environments = yield* SessionEnvironment.Service
+        const root = Session.ID.make("ses_external_live_stop")
+        const child = Session.ID.make("ses_stop_child")
+        const late = Session.ID.make("ses_stop_cleanup_child")
+        const personal = Session.ID.make("ses_stop_personal")
+        const request = {
+          key: "paperclip:live-stop",
+          body: JSON.stringify({
+            version: 1,
+            backendID: environments.backendID,
+            owner: "paperclip:company:agent",
+            sessionID: root,
+            inputID: "msg_external_live_stop",
+            location: { directory: "/project" },
+            prompt: { text: "Owned work" },
+            environment: {},
+          }),
+        }
+        const digest = createHash("sha256").update(request.body).digest("hex")
+        yield* seedSessions(database, [root], { environment_required: true })
+        yield* seedSessions(database, [child], { environment_required: true, parent_id: root })
+        yield* seedSessions(database, [personal])
+        yield* database.db
+          .update(SessionTable)
+          .set({ metadata: { externalExecutionKey: request.key, externalExecutionSha256: digest } })
+          .where(eq(SessionTable.id, root))
+          .run()
+          .pipe(Effect.orDie)
+        yield* database.db
+          .insert(SessionExternalTable)
+          .values({
+            key: request.key,
+            body_sha256: digest,
+            owner: "paperclip:company:agent",
+            session_id: root,
+            input_id: SessionMessage.ID.make("msg_external_live_stop"),
+            admitted: true,
+          })
+          .run()
+          .pipe(Effect.orDie)
+        yield* environments.restore(root, {}, environments.generation)
+        const started = new Map([root, child, personal].map((id) => [id, Deferred.makeUnsafe<void>()]))
+        const finished: Session.ID[] = []
+        const scope = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+        const context = yield* buildExecution(scope, ({ sessionID }) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started.get(sessionID)!, undefined)
+            yield* Effect.never
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                finished.push(sessionID)
+                if (sessionID !== root) return
+                yield* seedSessions(database, [late], {
+                  environment_required: true,
+                  parent_id: root,
+                  time_suspended: Date.now(),
+                })
+                yield* seedInbox(database, late, ["steer"])
+              }),
+            ),
+          ),
+        )
+        const execution = Context.get(context, SessionExecution.Service)
+        const restart = Context.get(context, SessionRestart.Service)
+        const external = yield* SessionExternal.make.pipe(
+          Effect.provideService(SessionExecution.Service, execution),
+          Effect.provideService(SessionRestart.Service, restart),
+        )
+        yield* Effect.forEach([root, child, personal], (id) => execution.wake(id), { discard: true })
+        yield* Effect.forEach(started.values(), (ready) => Deferred.await(ready), { discard: true })
+        const stopped = yield* external.stop(request)
+        expect(stopped.settled).toBe(true)
+        expect(stopped.lineage.map((item) => item.sessionID).toSorted()).toEqual([root, child, late].toSorted())
+        expect(finished.toSorted()).toEqual([root, child].toSorted())
+        expect(yield* execution.active).toEqual(new Set([personal]))
+        expect((yield* claims(database))[late]).toBe(false)
+        yield* environments.restore(root, {}, environments.generation)
+        yield* execution.resume(late)
+        expect(yield* execution.active).toEqual(new Set([personal]))
+        yield* execution.interrupt(personal, { awaitSettlement: true })
+      }),
+  )
+
   test("classifies success and typed failure terminals", () => {
     expect(SessionExecution.terminal(Exit.succeed(undefined))).toEqual({ type: "succeeded" })
     expect(
@@ -284,6 +386,88 @@ describe("SessionExecution lifecycle", () => {
       expect(drained.length).toBe(2)
       expect(continued.length).toBe(2)
       yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.effect("parks required-environment claims through boot and explicit wake until their owner restores context", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const environments = yield* SessionEnvironment.Service
+      const owned = Session.ID.make("ses_required_owned")
+      const child = Session.ID.make("ses_required_child")
+      const unrelated = Session.ID.make("ses_required_unrelated")
+      yield* seedSessions(database, [owned], { time_suspended: Date.now(), environment_required: true })
+      yield* seedSessions(database, [child], { parent_id: owned, environment_required: true })
+      yield* seedSessions(database, [unrelated], { time_suspended: Date.now() })
+      const drained: string[] = []
+      const ordinary = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, ({ sessionID }) =>
+        Effect.sync(() => void drained.push(sessionID)).pipe(
+          Effect.andThen(sessionID === unrelated ? Deferred.succeed(ordinary, undefined) : Effect.void),
+        ),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      const restart = Context.get(context, SessionRestart.Service)
+      yield* restart.resumeSuspendedSessions
+      yield* Deferred.await(ordinary)
+      yield* execution.awaitIdle(unrelated)
+      yield* execution.resume(owned)
+      yield* execution.wake(child)
+      expect(drained).toEqual([unrelated])
+      expect((yield* claims(database))[owned]).toBe(true)
+      expect(yield* attempts(database, owned)).toBe(0)
+      yield* environments.set(owned, { PAPERCLIP_RUN_ID: "restored-generation" })
+      yield* execution.resume(child)
+      yield* execution.resume(owned)
+      expect(drained).toEqual([unrelated, child, owned])
+      yield* environments.clear(owned)
+      yield* execution.resume(child)
+      expect(drained).toEqual([unrelated, child, owned])
+    }),
+  )
+
+  it.effect("retains background descendants without boot resumption when their environment is missing", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_required_background_parent")
+      const child = Session.ID.make("ses_required_background_child")
+      yield* seedSessions(database, [parent], { environment_required: true })
+      yield* seedSessions(database, [child], {
+        parent_id: parent,
+        environment_required: true,
+        time_suspended: Date.now(),
+      })
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Owned background work",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Scope.provide(scope))
+      const drained: string[] = []
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) => Effect.sync(() => void drained.push(sessionID)),
+        undefined,
+        restarted,
+      )
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      expect(drained).toEqual([])
+      expect((yield* claims(database))[child]).toBe(true)
+      expect(yield* attempts(database, child)).toBe(0)
+      expect(yield* restarted.pendingBackground).toHaveLength(1)
     }),
   )
 
@@ -1283,7 +1467,9 @@ function seedInbox(
 function seedSessions(
   database: Database.Service["Service"],
   sessionIDs: ReadonlyArray<Session.ID>,
-  values: Partial<Pick<typeof SessionTable.$inferInsert, "time_suspended" | "resume_attempts" | "parent_id">> = {},
+  values: Partial<
+    Pick<typeof SessionTable.$inferInsert, "time_suspended" | "resume_attempts" | "parent_id" | "environment_required">
+  > = {},
 ) {
   return Effect.gen(function* () {
     yield* database.db
@@ -1346,6 +1532,7 @@ function buildExecution(
     const store = yield* SessionStore.Service
     const jobs = overrideJobs ?? (yield* Job.Service)
     const sessions = yield* Session.Service
+    const environments = yield* SessionEnvironment.Service
     const sessionLayer = Layer.effect(
       Session.Service,
       Effect.gen(function* () {
@@ -1381,6 +1568,7 @@ function buildExecution(
         Layer.provide(Layer.succeed(Database.Service, database)),
         Layer.provide(Layer.succeed(Bus.Service, bus)),
         Layer.provide(Layer.succeed(SessionStore.Service, store)),
+        Layer.provide(Layer.succeed(SessionEnvironment.Service, environments)),
         Layer.provide(Layer.succeed(Job.Service, jobs)),
         // Do not reuse the outer harness's selector with its already-captured Location map.
         Layer.provide(

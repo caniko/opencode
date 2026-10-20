@@ -134,7 +134,9 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
               "log",
               "repos",
             ]).pipe(
-              Argument.withDescription("Print only one path: db, home, data, config, cache, state, tmp, bin, log, repos"),
+              Argument.withDescription(
+                "Print only one path: db, home, data, config, cache, state, tmp, bin, log, repos",
+              ),
               Argument.optional,
             ),
           },
@@ -418,6 +420,12 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
     Spec.make("session", {
       description: "Manage sessions",
       commands: [
+        Spec.make("external", {
+          description: "Reconcile externally owned work with the existing managed backend using JSON on stdin",
+          params: {
+            operation: Argument.choice("operation", ["info", "admit", "status", "resume", "stop"]),
+          },
+        }),
         Spec.make("list", {
           description: "List top-level sessions in the current project, newest first",
           params: {
@@ -474,6 +482,20 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         Spec.make("start", { description: "Start the background server" }),
         Spec.make("restart", { description: "Restart the background server" }),
         Spec.make("status", { description: "Show background server status" }),
+        Spec.make("wait", {
+          description: "Wait for an existing background server without starting or replacing it",
+          params: {
+            pid: Flag.integer("pid").pipe(
+              Flag.withDescription("Required operating system process ID"),
+              Flag.withSchema(Schema.Int.check(Schema.isGreaterThan(0))),
+            ),
+            timeout: Flag.integer("timeout").pipe(
+              Flag.withDescription("Readiness deadline in seconds"),
+              Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 300 }))),
+              Flag.withDefault(30),
+            ),
+          },
+        }),
         Spec.make("stop", { description: "Stop the background server" }),
         Spec.make("get", {
           description: "Get service configuration",

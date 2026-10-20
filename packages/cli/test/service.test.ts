@@ -618,16 +618,10 @@ async function availablePort() {
 }
 
 function serviceEnv(root: string) {
-  return {
-    ...process.env,
-    HOME: root,
-    OPENCODE_DB: path.join(root, "opencode.db"),
-    OPENCODE_TEST_HOME: root,
-    XDG_CACHE_HOME: path.join(root, "cache"),
+  return isolatedEnv(root, {
+    OPENCODE_CONFIG_DIR: path.join(root, "config", "opencode"),
     XDG_CONFIG_HOME: path.join(root, "config"),
-    XDG_DATA_HOME: path.join(root, "data"),
-    XDG_STATE_HOME: path.join(root, "state"),
-  }
+  })
 }
 
 async function startManagedService(prefix: string, failBoot = false) {
@@ -645,8 +639,9 @@ async function startManagedService(prefix: string, failBoot = false) {
   const info = await waitForInfo(registration).catch(async (cause) => {
     owner.kill("SIGTERM")
     await owner.exited
+    const stderr = await new Response(owner.stderr).text()
     await fs.rm(root, { recursive: true, force: true })
-    throw cause
+    throw new Error(`Managed service failed to register (exit ${owner.exitCode}): ${stderr}`, { cause })
   })
   return { root, port, registration, owner, info }
 }

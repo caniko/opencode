@@ -111,12 +111,28 @@ test.describe("timeline history", () => {
         element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -delta }))
         element.scrollTop -= delta
       }, state.mountedAbove)
+      let observed: unknown
       await expect
         .poll(async () => {
           const next = await visibleTimeline(page)
-          return held.length > 0 || (next.signature !== state.signature && next.covered)
+          observed = {
+            progressed: held.length > 0 || (next.signature !== state.signature && next.covered),
+            previous: state,
+            next,
+            missingParts: expectedParts.filter((id) => !seenParts.has(id)),
+            missingMessages: expectedMessages.filter((id) => !seenMessages.has(id)),
+            loads,
+          }
+          return observed
         })
-        .toBe(true)
+        .toMatchObject({ progressed: true })
+        .catch(async (error) => {
+          await test.info().attach("timeline-history-paging-state", {
+            body: JSON.stringify({ observed }, null, 2),
+            contentType: "application/json",
+          })
+          throw error
+        })
     }
 
     expect(expectedParts.filter((id) => !seenParts.has(id))).toEqual([])
@@ -362,6 +378,11 @@ function visibleTimeline(page: Page) {
       messages: messageIDs(messages),
       visibleMessages: messageIDs(messages.filter(inView)),
       scrollTop: Math.round(scroller.scrollTop),
+      scrollHeight: scroller.scrollHeight,
+      clientHeight: scroller.clientHeight,
+      viewportTop: view.top,
+      viewportBottom: view.bottom,
+      firstRowTop,
       // Mounted rows reach the top edge, so the virtualizer has rendered this position. Below 200px the
       // timeline requests the next older page instead.
       covered: scroller.scrollTop < 200 || firstRowTop <= view.top + 1,

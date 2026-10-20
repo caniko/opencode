@@ -80,6 +80,15 @@ export function currentToolGroupedRead(tool: SessionMessageAssistantTool) {
   )
 }
 
+export function currentToolGroupedFile(tool: SessionMessageAssistantTool) {
+  if (tool.state.status === "error") return false
+  if (tool.name === "edit" || tool.name === "patch") return true
+  if (tool.name !== "write") return false
+  const files = currentToolMetadata(tool).files
+  // A zero-byte write has no diff to group; keep its normal file row instead.
+  return currentToolInput(tool).content !== "" || (Array.isArray(files) && files.length > 0)
+}
+
 export function currentContentDefaultOpen(
   content: SessionMessageAssistant["content"][number],
   shellExpanded: boolean,

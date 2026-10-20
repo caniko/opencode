@@ -3,6 +3,7 @@ import type { Effect, Stream } from "effect"
 import type { Location } from "@opencode/schema/location"
 import type { Agent } from "@opencode/schema/agent"
 import type { Plugin } from "@opencode/schema/plugin"
+import type { SessionExternal } from "@opencode/schema/session-external"
 import type { Session } from "@opencode/schema/session"
 import type { AbsolutePath } from "@opencode/schema/schema"
 import type { Project } from "@opencode/schema/project"
@@ -112,6 +113,37 @@ export interface PluginApi<E = never> {
   readonly update: PluginUpdateOperation<E>
 }
 
+export type SessionExternalInfoOutput = SessionExternal.Backend
+export type SessionExternalInfoOperation<E = never> = () => Effect.Effect<SessionExternalInfoOutput, E>
+
+export type SessionExternalAdmitInput = { readonly key: SessionExternal.Key; readonly body: string }
+export type SessionExternalAdmitOutput = SessionExternal.Receipt
+export type SessionExternalAdmitOperation<E = never> = (
+  input: SessionExternalAdmitInput,
+) => Effect.Effect<SessionExternalAdmitOutput, E>
+
+export type SessionExternalStatusInput = { readonly key: SessionExternal.Key; readonly body: string }
+export type SessionExternalStatusOutput = SessionExternal.Receipt
+export type SessionExternalStatusOperation<E = never> = (
+  input: SessionExternalStatusInput,
+) => Effect.Effect<SessionExternalStatusOutput, E>
+
+export type SessionExternalResumeInput = {
+  readonly key: SessionExternal.Key
+  readonly body: string
+  readonly backendGeneration: string
+}
+export type SessionExternalResumeOutput = SessionExternal.Receipt
+export type SessionExternalResumeOperation<E = never> = (
+  input: SessionExternalResumeInput,
+) => Effect.Effect<SessionExternalResumeOutput, E>
+
+export type SessionExternalStopInput = { readonly key: SessionExternal.Key; readonly body: string }
+export type SessionExternalStopOutput = SessionExternal.Receipt
+export type SessionExternalStopOperation<E = never> = (
+  input: SessionExternalStopInput,
+) => Effect.Effect<SessionExternalStopOutput, E>
+
 export type SessionListInput = {
   readonly limit?: number | undefined
   readonly order?: "asc" | "desc" | undefined
@@ -204,6 +236,7 @@ export type SessionCreateInput = {
   readonly model?: Model.Ref | undefined
   readonly location?: Location.PublicRef | undefined
   readonly metadata?: Session.Metadata | undefined
+  readonly environmentRequired?: boolean | undefined
   readonly permissions?: Permission.Ruleset | undefined
 }
 export type SessionCreateOutput = Session.Info
@@ -451,6 +484,7 @@ export type SessionLogOutput =
             readonly agent?: Agent.ID | undefined
             readonly model?: Model.Ref | undefined
             readonly metadata?: Session.Metadata | undefined
+            readonly environmentRequired?: boolean | undefined
             readonly permissions?: Permission.Ruleset | undefined
             readonly version: string
           }
@@ -1439,6 +1473,13 @@ export type SessionViewOutput = void
 export type SessionViewOperation<E = never> = (input: SessionViewInput) => Effect.Effect<SessionViewOutput, E>
 
 export interface SessionApi<E = never> {
+  readonly external: {
+    readonly info: SessionExternalInfoOperation<E>
+    readonly admit: SessionExternalAdmitOperation<E>
+    readonly status: SessionExternalStatusOperation<E>
+    readonly resume: SessionExternalResumeOperation<E>
+    readonly stop: SessionExternalStopOperation<E>
+  }
   readonly list: SessionListOperation<E>
   readonly stats: SessionStatsOperation<E>
   readonly create: SessionCreateOperation<E>

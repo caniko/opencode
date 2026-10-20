@@ -1,0 +1,29 @@
+diff --git a/dist/managers/InteractionManager.js b/dist/managers/InteractionManager.js
+--- a/dist/managers/InteractionManager.js
++++ b/dist/managers/InteractionManager.js
+@@ -41,6 +41,7 @@ var InteractionManager = class {
+ 		this.pre?.removeEventListener("click", this.handlePointerClick);
+ 		this.pre?.removeEventListener("pointerdown", this.handlePointerDown);
+ 		this.pre?.removeEventListener("pointermove", this.handlePointerMove);
++		this.pre?.removeEventListener("pointerover", this.handlePointerMove);
+ 		this.pre?.removeEventListener("pointerleave", this.handlePointerLeave);
+ 		this.pre?.removeAttribute("data-interactive-lines");
+ 		this.pre?.removeAttribute("data-interactive-line-numbers");
+@@ -241,6 +242,9 @@ var InteractionManager = class {
+ 			pre.addEventListener("click", this.handlePointerClick);
+ 			pre.addEventListener("pointerdown", this.handlePointerDown);
+ 			pre.addEventListener("pointermove", this.handlePointerMove);
++			// Highlighting can replace the line beneath a stationary mouse. Native
++			// boundary events update the hovered row without polling or fake movement.
++			pre.addEventListener("pointerover", this.handlePointerMove);
+ 			pre.addEventListener("pointerleave", this.handlePointerLeave);
+ 			this.hasPointerListeners = true;
+ 			debugLogIfEnabled(__debugPointerEvents, "click", "FileDiff.DEBUG.attachEventListeners: Attaching click events for:", (() => {
+@@ -259,6 +263,7 @@ var InteractionManager = class {
+ 			pre.removeEventListener("click", this.handlePointerClick);
+ 			pre.removeEventListener("pointerdown", this.handlePointerDown);
+ 			pre.removeEventListener("pointermove", this.handlePointerMove);
++			pre.removeEventListener("pointerover", this.handlePointerMove);
+ 			pre.removeEventListener("pointerleave", this.handlePointerLeave);
+ 			this.hasPointerListeners = false;
+ 		}

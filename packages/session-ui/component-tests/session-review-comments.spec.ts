@@ -44,7 +44,7 @@ story("shows a comment button when a diff line is hovered", async ({ mount }) =>
   await line.hover()
   await expect(comment).toBeVisible()
   await expect(comment).toHaveCSS("pointer-events", "auto")
-  await comment.dispatchEvent("click")
+  await comment.click()
   await expect(review.getByRole("textbox")).toBeVisible()
   await expect(review.locator('[data-slot="line-comment-editor-label"]')).toHaveText("Commenting on line 1")
 })

@@ -1,5 +1,6 @@
 import { SessionMessage } from "@opencode/schema/session-message"
 import { SessionInbox } from "@opencode/schema/session-inbox"
+import { SessionExternal } from "@opencode/schema/session-external"
 import { PromptInput } from "@opencode/schema/prompt-input"
 import { Session } from "@opencode/schema/session"
 import { SessionStats } from "@opencode/schema/session-stats"
@@ -170,13 +171,79 @@ export const SessionsQuery = Schema.Struct({
   cursor: SessionsQueryCursor.pipe(Schema.optional),
 }).annotate({ identifier: "SessionsQuery" })
 
-export const makeSessionGroup = <
-  I extends HttpApiMiddleware.AnyId,
-  S,
-  FormI extends HttpApiMiddleware.AnyId,
-  FormS,
->(sessionLocationMiddleware: Context.Key<I, S>, formLocationMiddleware: Context.Key<FormI, FormS>) =>
+export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI extends HttpApiMiddleware.AnyId, FormS>(
+  sessionLocationMiddleware: Context.Key<I, S>,
+  formLocationMiddleware: Context.Key<FormI, FormS>,
+) =>
   HttpApiGroup.make("server.session")
+    .add(
+      HttpApiEndpoint.get("session.external.info", "/api/session/external", {
+        success: SessionExternal.Backend,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.external.info",
+          summary: "Inspect the external execution backend",
+          description:
+            "Discover the durable backend database identity and process generation without reserving or starting work.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.external.admit", "/api/session/external/admit", {
+        payload: SessionExternal.Request,
+        success: SessionExternal.Receipt,
+        error: [ConflictError, InvalidRequestError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.external.admit",
+          summary: "Admit an externally owned session",
+          description:
+            "Bind exact request bytes to an immutable key and durably admit input without starting model execution.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.external.status", "/api/session/external/status", {
+        payload: SessionExternal.Request,
+        success: SessionExternal.Receipt,
+        error: [ConflictError, InvalidRequestError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.external.status",
+          summary: "Reconcile external session ownership",
+          description:
+            "Read a digest-bound ownership and lineage receipt. An uncertain request reserves its identity without admitting work.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.external.resume", "/api/session/external/resume", {
+        payload: Schema.Struct({ ...SessionExternal.Request.fields, backendGeneration: Schema.String }),
+        success: SessionExternal.Receipt,
+        error: [ConflictError, InvalidRequestError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.external.resume",
+          summary: "Resume an externally owned session",
+          description:
+            "Restore this process generation's environment only after checking durable Stop, then reconcile and wake the owned lineage.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.external.stop", "/api/session/external/stop", {
+        payload: SessionExternal.Request,
+        success: SessionExternal.Receipt,
+        error: [ConflictError, InvalidRequestError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.external.stop",
+          summary: "Stop an externally owned session",
+          description:
+            "Persist Stop before cancellation, including before admission. Acknowledge settlement only after owned execution, inbox and background jobs settle.",
+        }),
+      ),
+    )
     .add(
       HttpApiEndpoint.get("session.list", "/api/session", {
         query: SessionsQuery,
@@ -226,6 +293,7 @@ export const makeSessionGroup = <
           model: Model.Ref.pipe(Schema.optional),
           location: Location.PublicRef.pipe(Schema.optional),
           metadata: Session.Metadata.pipe(Schema.optional),
+          environmentRequired: Schema.Boolean.pipe(Schema.optional),
           permissions: Permission.Ruleset.pipe(Schema.optional),
         }),
         success: Schema.Struct({ data: PublicSessionInfo }),
@@ -562,9 +630,7 @@ export const makeSessionGroup = <
         error: [SessionNotFoundError, SessionBusyError],
       })
         .middleware(sessionLocationMiddleware)
-        .annotateMerge(
-          OpenApi.annotations({ identifier: "session.revert.commit", summary: "Commit staged revert" }),
-        ),
+        .annotateMerge(OpenApi.annotations({ identifier: "session.revert.commit", summary: "Commit staged revert" })),
     )
     .add(
       HttpApiEndpoint.get("session.context", "/api/session/:sessionID/context", {

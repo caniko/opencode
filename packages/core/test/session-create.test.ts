@@ -32,6 +32,7 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { SessionTransfer } from "@opencode/core/session/transfer"
+import { SessionEnvironment } from "@opencode/core/session/environment"
 import { Workspace } from "@opencode/core/workspace"
 import { Expected } from "./lib/session-message"
 import { testEffect } from "./lib/effect"
@@ -51,6 +52,7 @@ const it = testEffect(
       Session.node,
       SessionTransfer.node,
       InstructionEntry.node,
+      SessionEnvironment.node,
     ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
@@ -103,6 +105,28 @@ function withTmp<A, E, R>(f: (directory: string) => Effect.Effect<A, E, R>) {
 }
 
 describe("Session.create", () => {
+  it.effect("persists required environment admission and inherits it through children and forks", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const environments = yield* SessionEnvironment.Service
+      const root = yield* sessions.create({ location, environmentRequired: true })
+      expect(root.environmentRequired).toBe(true)
+      const child = yield* sessions.create({ parentID: root.id })
+      expect((yield* sessions.get(child.id)).environmentRequired).toBe(true)
+      expect(yield* environments.ready(child.id)).toBe(false)
+      yield* sessions.environment({ sessionID: root.id, variables: { PAPERCLIP_RUN_ID: "owned" } })
+      expect(yield* environments.ready(child.id)).toBe(true)
+      expect(yield* environments.get(child.id)).toEqual({ PAPERCLIP_RUN_ID: "owned" })
+      yield* sessions.prompt({ sessionID: root.id, text: "Settled history", resume: false })
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      yield* SessionInbox.promote(database.db, bus, root.id, "steer")
+      expect((yield* sessions.fork({ sessionID: root.id })).environmentRequired).toBe(true)
+      yield* environments.clear(root.id)
+      yield* environments.set(child.id, { PAPERCLIP_RUN_ID: "stale-child-context" })
+      expect(yield* environments.ready(child.id)).toBe(false)
+    }),
+  )
   liveIt.live("preserves the project canonical directory when creating a session in another clone", () =>
     withTmp((directory) =>
       Effect.gen(function* () {
@@ -809,9 +833,10 @@ describe("Session.create", () => {
       const session = yield* Session.Service
       const parent = yield* session.create({ location })
 
-      expect(
-        yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "Session.ForkEmptyError", sessionID: parent.id })
+      expect(yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip)).toMatchObject({
+        _tag: "Session.ForkEmptyError",
+        sessionID: parent.id,
+      })
     }),
   )
 

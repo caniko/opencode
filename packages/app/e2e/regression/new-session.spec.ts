@@ -34,9 +34,20 @@ test.use({
   permissions: ["clipboard-read", "clipboard-write"],
 })
 
-test("the new session screen does not show session details", async ({ page }) => {
-  await openDraft(page, { name: "Summary" })
+test("opening a draft and Home stays read-only without session details", async ({ page }) => {
+  const writes: string[] = []
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith("/api/") && !["GET", "OPTIONS"].includes(request.method()))
+      writes.push(`${request.method()} ${path}`)
+  })
+  const draft = await openDraft(page, { name: "Summary" })
   await expect(page.getByRole("button", { name: "Session details", exact: true })).toHaveCount(0)
+  await draft.editor.fill("Keep this draft local")
+  await expect(draft.editor).toHaveText("Keep this draft local")
+  await page.getByRole("button", { name: "Home", exact: true }).click()
+  await expect(page.locator('[data-component="home-project-row"]').filter({ hasText: "Summary" })).toBeVisible()
+  expect(writes).toEqual([])
 })
 
 test("the dark new session panel exposes no lighter background at its rounded corners", async ({ page }) => {

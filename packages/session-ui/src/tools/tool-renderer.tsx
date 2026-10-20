@@ -48,6 +48,7 @@ import type {
 } from "@opencode/client/promise"
 import {
   currentToolError,
+  currentToolGroupedFile,
   currentToolGroupedRead,
   currentToolInput,
   currentToolMetadata,
@@ -570,7 +571,12 @@ export function CurrentContextToolGroup(props: {
         return groups
       }
       const previous = groups.at(-1)
-      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {
+      if (
+        currentToolGroupedFile(tool) &&
+        Array.isArray(previous) &&
+        previous[0] &&
+        currentToolGroupedFile(previous[0])
+      ) {
         previous.push(tool)
         return groups
       }
@@ -602,7 +608,7 @@ export function CurrentContextToolGroup(props: {
   const patchKeys = createMemo(() => {
     const keys = new Map<SessionMessageAssistantTool, string>()
     items().forEach((item) => {
-      if (!Array.isArray(item) || !item[0] || !isFileChangeTool(item[0])) return
+      if (!Array.isArray(item) || !item[0] || !currentToolGroupedFile(item[0])) return
       const key = props.patchGroupKey?.(item) ?? item[0].id
       item.forEach((tool) => keys.set(tool, key))
     })
@@ -735,7 +741,7 @@ export function CurrentContextToolGroup(props: {
                                 }
                                 fallback={
                                   <Show
-                                    when={isFileChangeTool(tool())}
+                                    when={currentToolGroupedFile(tool())}
                                     fallback={
                                       <ToolDisplay
                                         id={tool().id}
@@ -1049,10 +1055,6 @@ function scrollParent(element: HTMLElement): HTMLElement | undefined {
   if (!parent) return
   if (/auto|scroll/.test(getComputedStyle(parent).overflowY)) return parent
   return scrollParent(parent)
-}
-
-function isFileChangeTool(tool: SessionMessageAssistantTool) {
-  return tool.state.status !== "error" && (tool.name === "edit" || tool.name === "write" || tool.name === "patch")
 }
 
 function samePatchFile(a: unknown, b: unknown) {
@@ -2084,7 +2086,7 @@ ToolRegistry.register({
     const diagnostics = createMemo(() => getDiagnostics(props.metadata.diagnostics, path()))
     return (
       <div data-component="write-tool">
-        <Show when={content() && path()}>
+        <Show when={path()}>
           <ToolFileAccordion
             path={path()}
             defaultOpen={props.defaultOpen}

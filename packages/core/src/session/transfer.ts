@@ -103,6 +103,7 @@ const layer = Layer.effect(
               agent: input.data.info.agent,
               model: input.data.info.model,
               metadata: input.data.info.metadata,
+              environmentRequired: input.data.info.environmentRequired,
               permissions: input.data.info.permissions,
             },
             {

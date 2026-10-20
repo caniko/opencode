@@ -63,6 +63,7 @@ export const Created = Event.durable({
     model: Model.Ref.pipe(optional),
     /** Host-supplied annotations resolved at creation, including any inherited from a parent. */
     metadata: SessionMetadata.pipe(optional),
+    environmentRequired: Schema.Boolean.pipe(optional),
     permissions: Permission.Ruleset.pipe(optional),
     version: Schema.String,
   },

@@ -7,6 +7,15 @@ on:
       - v2
   pull_request:
   workflow_dispatch:
+    inputs:
+      timeline_benchmark:
+        description: "Diagnostic-only serial production benchmark; grants no test acceptance"
+        type: boolean
+        default: false
+      source_revision:
+        description: "Exact 40-character source SHA for the diagnostic benchmark"
+        type: string
+        default: ""
 
 concurrency:
   # Keep every run on dev so cancelled checks do not pollute the default branch
@@ -17,14 +26,99 @@ concurrency:
 permissions:
   contents: read
   checks: write
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  managed-execution:
+    if: ${{ !inputs.timeline_benchmark }}
+    name: exact-head managed execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind attempt and actual runtime
+        env:
+          CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          mkdir -p "$RUNNER_TEMP/managed-execution"
+          git rev-parse HEAD > "$RUNNER_TEMP/managed-execution/revision"
+          uname -a > "$RUNNER_TEMP/managed-execution/host"
+          cp /etc/os-release "$RUNNER_TEMP/managed-execution/os-release"
+          env | grep -E '^(GITHUB_RUN_ID|GITHUB_RUN_ATTEMPT|GITHUB_WORKFLOW_REF|GITHUB_WORKFLOW_SHA|RUNNER_ENVIRONMENT|RUNNER_OS|RUNNER_ARCH|ImageOS|ImageVersion)=' | sort > "$RUNNER_TEMP/managed-execution/runner"
+          cp "$GITHUB_EVENT_PATH" "$RUNNER_TEMP/managed-execution/event.json"
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+      - name: Execute owned lifecycle and authenticated boundaries once
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/managed-execution"
+          bun --version > "$EVIDENCE/bun-version"
+          node --version > "$EVIDENCE/node-version"
+          sha256sum "$(command -v bun)" "$(command -v node)" bun.lock flake.lock > "$EVIDENCE/runtime.sha256"
+          cd packages/core
+          bun run script/test.ts --retry 0 --reporter junit --reporter-outfile "$EVIDENCE/core.xml" test/session-external.test.ts test/session-execution.test.ts test/session-environment.test.ts test/v1-migration.test.ts test/session-create.test.ts 2>&1 | tee "$EVIDENCE/core.log"
+          cd ../cli
+          bun test --retry 0 --reporter junit --reporter-outfile "$EVIDENCE/cli.xml" test/service-readiness.test.ts test/session-external.test.ts 2>&1 | tee "$EVIDENCE/cli.log"
+          cd ../server
+          bun test --retry 0 --reporter junit --reporter-outfile "$EVIDENCE/server.xml" test/session-external.test.ts 2>&1 | tee "$EVIDENCE/server.log"
+          cd ../client
+          bun run check:generated 2>&1 | tee "$EVIDENCE/generated.log"
+          cd ../..
+          for report in "$EVIDENCE/core.xml" "$EVIDENCE/cli.xml" "$EVIDENCE/server.xml"; do
+            test -s "$report"
+            grep -q '<testcase' "$report"
+          done
+          ! grep -E ' (failures|errors|skipped)="[1-9][0-9]*"|<(skipped|failure|error|rerunFailure|flakyFailure)([ />])' "$EVIDENCE/"*.xml
+      - name: Seal original reports and logs
+        if: always()
+        run: |
+          cd "$RUNNER_TEMP/managed-execution"
+          sha256sum revision host os-release runner event.json *-version *.xml *.log runtime.sha256 > members.sha256
+      - name: Retain source-bound lifecycle evidence
+        id: evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: managed-execution-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/managed-execution/
+          retention-days: 31
+          if-no-files-found: error
+      - name: Verify actual provider retention and archive digest
+        if: always() && steps.evidence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.evidence.outputs.artifact-digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
+          node --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { readFileSync } from "node:fs";
+            const artifact = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/artifact.json", "utf8"));
+            assert.equal(artifact.expired, false);
+            assert.equal(artifact.digest, "sha256:" + process.env.ARTIFACT_DIGEST);
+            assert.ok(Date.parse(artifact.expires_at) - Date.parse(artifact.created_at) >= 2592000000);
+            console.log(JSON.stringify(artifact));
+          '
+
   affected:
+    if: ${{ !inputs.timeline_benchmark }}
     name: affected packages
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       app: ${{ steps.packages.outputs.app }}
     steps:
@@ -53,15 +147,16 @@ jobs:
           bun -e 'const result = await Bun.file("affected.json").json(); console.log(`app=${result.packages.count > 0}`)' >> "$GITHUB_OUTPUT"
 
   unit:
+    if: ${{ !inputs.timeline_benchmark }}
     name: unit (${{ matrix.settings.name }})
     strategy:
       fail-fast: false
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -80,6 +175,24 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+
+      - name: Provision native search dependency
+        run: |
+          if ! command -v rg >/dev/null; then
+            if [ "$RUNNER_OS" = Windows ]; then
+              archive="$(cygpath -u "$RUNNER_TEMP")/ripgrep.zip"
+              curl --fail --location --output "$archive" https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip
+              printf '%s *%s\n' 124510b94b6baa3380d051fdf4650eaa80a302c876d611e9dba0b2e18d87493a "$archive" | sha256sum --check --strict
+              unzip -q "$archive" -d "$(dirname "$archive")/ripgrep"
+              binary="$(dirname "$archive")/ripgrep/ripgrep-15.1.0-x86_64-pc-windows-msvc"
+              export PATH="$binary:$PATH"
+              cygpath -w "$binary" >> "$GITHUB_PATH"
+            else
+              sudo apt-get update
+              sudo apt-get install --yes ripgrep
+            fi
+          fi
+          rg --version
 
       - name: Test Effect simplification rules
         if: runner.os == 'Linux'
@@ -106,12 +219,14 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
-          # The runners have four vCPUs, and each Bun test process performs its own concurrent work.
+          # Each Bun test process already runs concurrent work. Serialize package
+          # suites on both hosts so process fixtures retain their original deadlines.
+          concurrency=1
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            GITHUB_ACTIONS=false bun turbo test --concurrency=3
+            GITHUB_ACTIONS=false bun turbo test --concurrency="$concurrency" --log-order=stream
             exit 0
           fi
-          GITHUB_ACTIONS=false bun turbo test --affected --concurrency=3
+          GITHUB_ACTIONS=false bun turbo test --affected --concurrency="$concurrency" --log-order=stream
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
@@ -179,13 +294,14 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     env:
       E2E_ENABLED: ${{ needs.affected.outputs.app == 'true' && github.ref_name != 'v2' && github.head_ref != 'v2' }}
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      EVIDENCE: ${{ github.workspace }}/browser-evidence
     defaults:
       run:
         shell: bash
@@ -194,7 +310,30 @@ jobs:
         if: env.E2E_ENABLED == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Bind original browser attempt to exact source and hosted OS
+        if: env.E2E_ENABLED == 'true'
+        env:
+          CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUNNER_IDENTITY: ${{ toJSON(runner) }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          mkdir -p "$EVIDENCE"
+          git rev-parse HEAD > "$EVIDENCE/revision"
+          printf '%s\n' "$RUNNER_IDENTITY" > "$EVIDENCE/runner.json"
+          env | grep -E '^(GITHUB_RUN_ID|GITHUB_RUN_ATTEMPT|GITHUB_WORKFLOW_REF|GITHUB_WORKFLOW_SHA|RUNNER_ENVIRONMENT|RUNNER_OS|RUNNER_ARCH|ImageOS|ImageVersion)=' | sort > "$EVIDENCE/environment"
+          uname -a > "$EVIDENCE/host"
+          if [ "$RUNNER_OS" = Linux ]; then
+            cp /etc/os-release "$EVIDENCE/os-release"
+          else
+            MSYS_NO_PATHCONV=1 cmd.exe /c ver > "$EVIDENCE/os-version"
+          fi
+          cp "$GITHUB_EVENT_PATH" "$EVIDENCE/event.json"
 
       - name: Setup Node
         if: env.E2E_ENABLED == 'true'
@@ -234,33 +373,173 @@ jobs:
 
       - name: Run app e2e tests against production build
         if: env.E2E_ENABLED == 'true'
-        run: bun --cwd packages/app test:e2e:built
+        run: |
+          set -euo pipefail
+          bun --version > "$EVIDENCE/bun-version"
+          node --version > "$EVIDENCE/node-version"
+          bun --cwd packages/app -e 'console.log(require("@playwright/test/package.json").version)' > "$EVIDENCE/playwright-version"
+          sha256sum "$(command -v bun)" "$(command -v node)" bun.lock flake.lock > "$EVIDENCE/runtime.sha256"
+          if [ "$RUNNER_OS" = Linux ]; then
+            find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \) -exec sha256sum {} + >> "$EVIDENCE/runtime.sha256"
+          fi
+          bun --cwd packages/app test:e2e:built --retries=0 --repeat-each=1 --trace=retain-on-failure --reporter=line,html,json 2>&1 | tee "$EVIDENCE/app.log"
         env:
           CI: true
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-evidence/app.json
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ github.workspace }}/packages/app/e2e/playwright-report
         timeout-minutes: 30
 
       - name: Verify service worker precaching and upgrades
-        if: env.E2E_ENABLED == 'true'
+        if: ${{ !cancelled() && env.E2E_ENABLED == 'true' }}
         working-directory: packages/app
-        run: bunx playwright test --config e2e/service-worker/playwright.config.ts
+        run: |
+          set -euo pipefail
+          bunx playwright test --config e2e/service-worker/playwright.config.ts --retries=0 --repeat-each=1 --trace=retain-on-failure --reporter=line,json 2>&1 | tee "$EVIDENCE/service-worker.log"
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-evidence/service-worker.json
         timeout-minutes: 5
 
       - name: Run session UI component tests
         if: ${{ !cancelled() && env.E2E_ENABLED == 'true' }}
-        run: bun --cwd packages/session-ui test:components
+        run: |
+          set -euo pipefail
+          bun --cwd packages/session-ui test:components --retries=0 --repeat-each=1 --trace=retain-on-failure --reporter=line,html,json 2>&1 | tee "$EVIDENCE/components.log"
         env:
           CI: true
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-evidence/components.json
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ github.workspace }}/packages/session-ui/component-tests/playwright-report
         timeout-minutes: 15
 
+      - name: Require complete first-pass Linux browser reports
+        if: ${{ !cancelled() && env.E2E_ENABLED == 'true' && runner.os == 'Linux' }}
+        run: |
+          set -euo pipefail
+          for lane in app service-worker components; do
+            jq -e '
+              .errors == [] and
+              .stats.expected > 0 and .stats.unexpected == 0 and .stats.flaky == 0 and .stats.skipped == 0 and
+              (.config.projects | length > 0 and all(.[]; .retries == 0 and .repeatEach == 1)) and
+              ([.suites[] | .. | objects | select(has("tests")) | .tests[]] |
+                length > 0 and all(.[]; .expectedStatus == "passed" and .status == "expected" and
+                  (.results | length == 1 and all(.[]; .retry == 0 and .status == "passed"))))
+            ' "$EVIDENCE/$lane.json"
+          done
+
+      - name: Seal original browser evidence
+        if: always() && env.E2E_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          find browser-evidence packages/app/e2e/test-results packages/app/e2e/playwright-report packages/session-ui/component-tests/test-results packages/session-ui/component-tests/playwright-report -type f ! -name members.sha256 -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE/members.sha256"
+
       - name: Upload Playwright artifacts
+        id: browser-evidence
         if: always() && env.E2E_ENABLED == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: playwright-${{ matrix.settings.name }}-${{ github.run_attempt }}
-          if-no-files-found: ignore
-          retention-days: 7
+          name: playwright-${{ matrix.settings.name }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 31
           path: |
+            browser-evidence/
             packages/app/e2e/test-results
             packages/app/e2e/playwright-report
             packages/session-ui/component-tests/test-results
             packages/session-ui/component-tests/playwright-report
+
+      - name: Verify actual browser evidence retention and digest
+        if: always() && steps.browser-evidence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.browser-evidence.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.browser-evidence.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/browser-artifact.json"
+          jq -e --arg digest "sha256:$ARTIFACT_DIGEST" '
+            .expired == false and .digest == $digest and
+            ((.expires_at | fromdateiso8601) - (.created_at | fromdateiso8601) >= 2592000)
+          ' "$RUNNER_TEMP/browser-artifact.json"
+
+  timeline-benchmark:
+    name: diagnostic-only production timeline benchmark
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.timeline_benchmark }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CANDIDATE: ${{ inputs.source_revision }}
+      EVIDENCE: ${{ github.workspace }}/timeline-benchmark
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    steps:
+      - name: Require an exact diagnostic source and original hosted attempt
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - name: Bind actual source and hosted environment
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          mkdir -p "$EVIDENCE"
+          git rev-parse HEAD > "$EVIDENCE/revision"
+          uname -a > "$EVIDENCE/host"
+          cp /etc/os-release "$EVIDENCE/os-release"
+          cp "$GITHUB_EVENT_PATH" "$EVIDENCE/event.json"
+          env | grep -E '^(GITHUB_RUN_ID|GITHUB_RUN_ATTEMPT|GITHUB_WORKFLOW_REF|GITHUB_WORKFLOW_SHA|RUNNER_ENVIRONMENT|RUNNER_OS|RUNNER_ARCH|ImageOS|ImageVersion)=' | sort > "$EVIDENCE/environment"
+      - uses: ./.github/actions/setup-bun
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.15"
+      - name: Install locked browser runtime
+        working-directory: packages/app
+        run: bunx playwright install --with-deps chromium
+      - name: Record runtime and execute the existing production benchmark serially
+        working-directory: packages/app
+        env:
+          CI: true
+          PLAYWRIGHT_BUILD: "1"
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/timeline-benchmark/report.json
+          OPENCODE_PERFORMANCE_TRACE_DIR: ${{ github.workspace }}/timeline-benchmark/chrome
+          OPENCODE_PERFORMANCE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          bun --version > "$EVIDENCE/bun-version"
+          node --version > "$EVIDENCE/node-version"
+          bun -e 'console.log(require("@playwright/test/package.json").version)' > "$EVIDENCE/playwright-version"
+          sha256sum "$(command -v bun)" "$(command -v node)" ../../bun.lock ../../flake.lock > "$EVIDENCE/runtime.sha256"
+          find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \) -exec sha256sum {} + >> "$EVIDENCE/runtime.sha256"
+          bunx playwright test --config e2e/performance/playwright.config.ts timeline/session-entry-benchmark.spec.ts timeline/session-timeline-benchmark.spec.ts --grep 'entry:|streams assistant text without remounting or oscillating' --workers=1 --retries=0 --repeat-each=1 --reporter=line,json 2>&1 | tee "$EVIDENCE/benchmark.log"
+      - name: Seal raw diagnostic evidence without granting producer acceptance
+        if: always()
+        run: |
+          if [ -d packages/app/e2e/test-results/performance ]; then
+            cp -a packages/app/e2e/test-results/performance "$EVIDENCE/results"
+          fi
+          find timeline-benchmark -type f ! -name members.sha256 -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE/members.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: evidence
+        if: always()
+        with:
+          name: diagnostic-timeline-${{ inputs.source_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: timeline-benchmark/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 31
+      - name: Verify actual provider retention and archive digest
+        if: always() && steps.evidence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.evidence.outputs.artifact-digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/timeline-artifact.json"
+          jq -e --arg digest "sha256:$ARTIFACT_DIGEST" '
+            .expired == false and .digest == $digest and
+            ((.expires_at | fromdateiso8601) - (.created_at | fromdateiso8601) >= 2592000)
+          ' "$RUNNER_TEMP/timeline-artifact.json"

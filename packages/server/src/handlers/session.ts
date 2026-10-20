@@ -2,6 +2,7 @@ import { Session } from "@opencode/core/session"
 import { SessionStats } from "@opencode/core/session/stats"
 import { SessionTitle } from "@opencode/core/session/title"
 import { SessionTransfer } from "@opencode/core/session/transfer"
+import { SessionExternal } from "@opencode/core/session/external"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { Form } from "@opencode/core/form"
 import { DateTime, Effect, Stream } from "effect"
@@ -31,10 +32,17 @@ function missingForm(id: Form.ID) {
   return new FormNotFoundError({ id, message: `Form not found: ${id}` })
 }
 
+function externalError(error: SessionExternal.Conflict | SessionExternal.InvalidRequest) {
+  return error._tag === "SessionExternal.Conflict"
+    ? new ConflictError({ message: error.message })
+    : new InvalidRequestError({ message: error.message })
+}
+
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
     const transfer = yield* SessionTransfer.Service
+    const external = yield* SessionExternal.Service
     const requireOwnedForm = Effect.fnUntraced(function* (sessionID: Form.Info["sessionID"], formID: Form.ID) {
       const form = yield* Form.Service
       const info = yield* form.get(formID).pipe(Effect.catchTag("Form.NotFoundError", () => missingForm(formID)))
@@ -132,6 +140,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 agent: ctx.payload.agent,
                 model: ctx.payload.model,
                 metadata: ctx.payload.metadata,
+                environmentRequired: ctx.payload.environmentRequired,
                 permissions: ctx.payload.permissions,
                 ...(ctx.payload.parentID === undefined
                   ? { location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) } }
@@ -141,6 +150,11 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
           }
         }),
       )
+      .handle("session.external.info", () => external.info)
+      .handle("session.external.admit", (ctx) => external.admit(ctx.payload).pipe(Effect.mapError(externalError)))
+      .handle("session.external.status", (ctx) => external.status(ctx.payload).pipe(Effect.mapError(externalError)))
+      .handle("session.external.resume", (ctx) => external.resume(ctx.payload).pipe(Effect.mapError(externalError)))
+      .handle("session.external.stop", (ctx) => external.stop(ctx.payload).pipe(Effect.mapError(externalError)))
       .handle(
         "session.import",
         Effect.fn(function* (ctx) {

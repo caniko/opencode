@@ -12,6 +12,7 @@ import {
 import { storyDocument, storyPatchFile, storyTool } from "../storybook/current-session-scenarios"
 import { SessionTimeline } from "./session-timeline"
 import { ToolDisplay } from "../tools/tool-renderer"
+import { timelinePresets } from "./detail"
 
 export default {
   title: "OpenCode/Work/File changes",
@@ -304,6 +305,27 @@ export const FileToolFallbacks = {
           />
         </CurrentSessionProviders>
       </section>
+    )
+  },
+}
+
+export const EmptyWrite = {
+  args: { grouped: false },
+  argTypes: { grouped: { control: "boolean" } },
+  render: (args: { grouped: boolean }) => {
+    const document = storyDocument([
+      storyTool("tool_empty_write", "write", "completed", { path: "src/example.ts", content: "" }),
+    ])
+    return (
+      <CurrentSessionProviders document={document}>
+        <SessionTimeline
+          document={document}
+          timelineDetail={{
+            ...timelinePresets[2].value,
+            edit: { placement: args.grouped ? "grouped" : "separate", details: "collapsed" },
+          }}
+        />
+      </CurrentSessionProviders>
     )
   },
 }

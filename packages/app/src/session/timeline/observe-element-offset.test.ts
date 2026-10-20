@@ -121,6 +121,36 @@ test("keeps checking until stale reset-delay callbacks can no longer win", async
   }
 })
 
+test("reads the native offset when a pending scroll-end callback follows a layout adjustment", async () => {
+  const targetWindow = new Window()
+  const viewport = targetWindow.document.createElement("div")
+  targetWindow.document.body.append(viewport)
+  const instance = {
+    scrollElement: viewport,
+    targetWindow,
+    scrollOffset: 64,
+    options: { horizontal: false, isRtl: false, isScrollingResetDelay: 0, useScrollendEvent: false },
+  } as unknown as Virtualizer<HTMLDivElement, HTMLDivElement>
+  const calls: [number, boolean][] = []
+  const cleanup = observeElementOffsetReconnectAware(instance, (offset, scrolling) => calls.push([offset, scrolling]))
+
+  try {
+    viewport.scrollTop = 64
+    viewport.dispatchEvent(new targetWindow.Event("scroll"))
+    // A layout/anchor write can precede its next native scroll event.
+    viewport.scrollTop = 4096
+    await targetWindow.happyDOM.waitUntilComplete()
+
+    expect(calls).toEqual([
+      [64, true],
+      [4096, false],
+    ])
+  } finally {
+    cleanup()
+    await targetWindow.happyDOM.close()
+  }
+})
+
 test("cleanup suppresses queued delegated callbacks, reconnect checks, and later scrolls", async () => {
   const route = document.createElement("section")
   const viewport = document.createElement("div")
