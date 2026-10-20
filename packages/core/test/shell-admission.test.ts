@@ -312,3 +312,89 @@ test("native admission readiness, not shim spawn, starts the shell execution clo
     ),
   )
 }, 10000)
+
+test("typed nonacceptance preserves the queued shell without a waiting process or blind replay", async () => {
+  if (process.platform === "win32") return
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const shell = yield* Shell.Service
+        const hooks = yield* PluginHooks.Service
+        const global = yield* Global.Service
+        const attempts = `${global.data}/attempts`
+        const original: string[] = []
+        yield* hooks.register("shell", "create.before", (event) =>
+          Effect.sync(() => {
+            original.push(event.command)
+            event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+            event.command = `
+        if [ ! -f '${attempts}' ]; then
+          printf first > '${attempts}'
+          printf '\\036%s:back' "$OPENCODE_SHELL_START_TOKEN" >&2
+          sleep .02
+          printf between
+          printf 'pressure:500\\037' >&2
+          exit 75
+        fi
+        printf '\\036%s\\037' "$OPENCODE_SHELL_START_TOKEN" >&2
+        printf executed
+      `
+          }),
+        )
+        const queued = yield* shell.create({ shell: "sh", command: "original", background: true, timeout: 100 })
+        yield* Effect.sleep("200 millis")
+        expect(yield* shell.get(queued.id)).toMatchObject({ status: "queued" })
+        expect((yield* shell.get(queued.id)).pid).toBeUndefined()
+        expect((yield* shell.get(queued.id)).time.started).toBeUndefined()
+        expect(yield* shell.result(queued)).toMatchObject({
+          info: { status: "exited", exit: 0 },
+          capture: { output: "betweenexecuted" },
+        })
+        expect(original).toEqual(["original", "original"])
+
+        yield* hooks.register("shell", "create.before", (event) =>
+          Effect.sync(() => {
+            event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+            event.command = `printf '\\036%s:backpressure:5000\\037' "$OPENCODE_SHELL_START_TOKEN" >&2; exit 75`
+          }),
+        )
+        const cancelled = yield* shell.create({ shell: "sh", command: "cancelled", background: true })
+        yield* Effect.sleep("100 millis")
+        expect((yield* shell.get(cancelled.id)).status).toBe("queued")
+        yield* shell.kill(cancelled.id)
+        expect((yield* shell.get(cancelled.id)).status).toBe("killed")
+
+        const expired = yield* shell.create({ shell: "sh", command: "expired", background: true, queueTimeout: 100 })
+        expect((yield* shell.result(expired)).info.status).toBe("failed")
+        for (const script of [
+          `printf '\\036%s:backpressure:1\\037' "$OPENCODE_SHELL_START_TOKEN" >&2; exit 1`,
+          `printf '\\036wrong-token:backpressure:1\\037' >&2; exit 75`,
+          `printf '\\036%s:backpressure:1\\037' "$OPENCODE_SHELL_START_TOKEN"; exit 75`,
+          `printf '\\036%s:backpressure:0\\037' "$OPENCODE_SHELL_START_TOKEN" >&2; exit 75`,
+          `printf '\\036%s:backpressure:60001\\037' "$OPENCODE_SHELL_START_TOKEN" >&2; exit 75`,
+          `printf '\\036%s\\037\\036%s:backpressure:1\\037' "$OPENCODE_SHELL_START_TOKEN" "$OPENCODE_SHELL_START_TOKEN" >&2; exit 75`,
+        ]) {
+          const registration = yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              event.command = script
+            }),
+          )
+          const count = original.length
+          const rejected = yield* shell.create({ shell: "sh", command: "no-replay", background: true })
+          yield* shell.result(rejected)
+          expect(original.length).toBe(count + 1)
+          yield* registration.dispose
+        }
+      }).pipe(
+        Effect.provide(
+          AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node, Global.node]), [
+            Location.node.replace(tempLocationLayer),
+            Global.node.replace(tempGlobalLayer),
+            Config.node.replace(Config.testLayer()),
+            Environment.node.replace(hostEnvironmentLayer),
+          ]),
+        ),
+      ),
+    ),
+  )
+}, 10000)

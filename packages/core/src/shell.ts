@@ -56,9 +56,7 @@ type Active = {
   // Resolves with the terminal Info once the command exits, times out, or is killed. A wait
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
-  finished: Deferred.Deferred<Pick<Info, "status" | "exit" | "signal">, AppProcess.AppProcessError>
   started: Deferred.Deferred<Info, AppProcess.AppProcessError>
-  finishing?: boolean
   stop?: Effect.Effect<void>
   timeoutFiber?: Fiber.Fiber<void>
   timeout?: (duration: number) => Effect.Effect<void>
@@ -333,7 +331,6 @@ const layer = () =>
               size: 0,
               newlines: 0,
               done: Deferred.makeUnsafe<Info, NotFoundError>(),
-              finished: Deferred.makeUnsafe<Pick<Info, "status" | "exit" | "signal">, AppProcess.AppProcessError>(),
               started: Deferred.makeUnsafe<Info, AppProcess.AppProcessError>(),
             }
             // No yielding between duplicate detection and registration: preparation
@@ -359,220 +356,281 @@ const layer = () =>
             // the managing fiber keeps its scope open until the command terminates (it awaits `done` at the
             // end). Background callers receive the registered queued command immediately.
             const worker = runFork(
-              Effect.scoped(
-                Effect.gen(function* () {
-                  yield* Effect.gen(function* () {
-                    // Permission stays leaf-owned and precedes all project effects.
-                    if (beforePreparation) yield* beforePreparation(invocation)
-                    if (input.background && input.prepareInBackground) yield* Deferred.succeed(prepared, undefined)
-                    yield* Effect.acquireUseRelease(
-                      Effect.sync(() => new AbortController()),
-                      (controller) =>
-                        hooks.trigger("shell", "create.before", { ...invocation, signal: controller.signal }).pipe(
-                          Effect.tap((result) =>
-                            Effect.sync(() => {
-                              invocation.command = result.command
-                              invocation.cwd = result.cwd
-                              invocation.timeout = result.timeout
-                              invocation.shell = result.shell
-                              invocation.env = result.env
-                            }),
-                          ),
-                        ),
-                      (controller) => Effect.sync(() => controller.abort()),
-                    )
-                    if (before) yield* before(invocation)
-                    command.info = produce(command.info, (draft) => {
-                      draft.command = invocation.command
-                      draft.cwd = invocation.cwd
-                      draft.shell = invocation.shell
-                    })
-                  }).pipe(
+              Effect.gen(function* () {
+                // Original authorization belongs to the intent, not each
+                // nonaccepted attempt. Never retain a prepared environment in storage.
+                if (beforePreparation)
+                  yield* beforePreparation(invocation).pipe(
                     Effect.provide(caller),
-                    Effect.onExit((exit) => Deferred.done(prepared, exit)),
+                    Effect.onExit((exit) => (Exit.isFailure(exit) ? Deferred.done(prepared, exit) : Effect.void)),
                   )
-                  const args = ShellSelect.args(invocation.shell, invocation.command)
-                  const waitingSince = Date.now()
-                  // A trusted shell adapter may opt into a private, per-invocation
-                  // start frame. Spawning that adapter is not workload admission.
-                  const startToken = invocation.env.OPENCODE_SHELL_NOTIFY_START === "1" ? randomUUID() : undefined
-                  invocation.env.OPENCODE_SHELL_START_TOKEN = startToken
-                  const marker = startToken ? Buffer.from(`\x1e${startToken}\x1f`) : undefined
-                  const nativeStarted = Deferred.makeUnsafe<void>()
-                  const handle = yield* environment.spawner
-                    .spawn(
-                      ChildProcess.make(invocation.shell, args, {
-                        cwd: invocation.cwd,
-                        env: invocation.env,
-                        stdin: "ignore",
-                        detached: process.platform !== "win32",
-                        forceKillAfter: Duration.seconds(3),
-                      }),
-                    )
-                    .pipe(
-                      Effect.mapError(
-                        (cause) => new AppProcess.AppProcessError({ command: invocation.command, cause }),
-                      ),
-                    )
-                  const stream = createWriteStream(file)
-                  const outputDone = Latch.makeUnsafe()
-                  let pending = Buffer.alloc(0)
-                  let notified = !marker
-                  const write = (chunk: Uint8Array) =>
-                    Effect.callback<void, Error>((resume) => {
-                      // Backpressure must reach the child: a slow output file
-                      // must not turn its entire output into backend RAM.
-                      stream.write(chunk, (error) => {
-                        if (error) return resume(Effect.fail(error))
-                        command.size += chunk.length
-                        // Count while streaming so truncation notices never rescan the output file.
-                        for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
-                          command.newlines++
-                        resume(Effect.void)
-                      })
+                if (input.background && input.prepareInBackground) yield* Deferred.succeed(prepared, undefined)
+                const requested = { ...invocation, env: { ...invocation.env } }
+                const waitingSince = command.info.time.queued!
+                let attempt = 0
+                while (true) {
+                  if (input.queueTimeout && Date.now() - waitingSince >= input.queueTimeout)
+                    return yield* new AppProcess.AppProcessError({
+                      command: input.command,
+                      cause: new Error("Timed out waiting for native admission"),
                     })
-                  // Parse only stderr: unrelated stdout can interleave with a
-                  // split control frame without corrupting the notification.
-                  const capture = marker
-                    ? Stream.merge(
-                        handle.stdout,
-                        handle.stderr.pipe(
-                          Stream.mapEffect((chunk) =>
-                            Effect.gen(function* () {
-                              if (notified) return chunk
-                              const data = Buffer.concat([pending, chunk])
-                              const index = data.indexOf(marker)
-                              if (index !== -1) {
-                                pending = Buffer.alloc(0)
-                                notified = true
-                                yield* Deferred.succeed(nativeStarted, undefined)
-                                return Buffer.concat([data.subarray(0, index), data.subarray(index + marker.length)])
-                              }
-                              // Retain only a possible split frame, never the whole output.
-                              const held = Math.min(data.length, marker.length - 1)
-                              pending = data.subarray(data.length - held)
-                              return data.subarray(0, data.length - held)
-                            }),
+                  const outcome = yield* Effect.scoped(
+                    Effect.gen(function* () {
+                      const invocation = { ...requested, env: { ...requested.env } }
+                      const finished = Deferred.makeUnsafe<
+                        Pick<Info, "status" | "exit" | "signal">,
+                        AppProcess.AppProcessError
+                      >()
+                      yield* Effect.gen(function* () {
+                        // Permission stays leaf-owned and precedes all project effects.
+                        yield* Effect.acquireUseRelease(
+                          Effect.sync(() => new AbortController()),
+                          (controller) =>
+                            hooks.trigger("shell", "create.before", { ...invocation, signal: controller.signal }).pipe(
+                              Effect.tap((result) =>
+                                Effect.sync(() => {
+                                  invocation.command = result.command
+                                  invocation.cwd = result.cwd
+                                  invocation.timeout = result.timeout
+                                  invocation.shell = result.shell
+                                  invocation.env = result.env
+                                }),
+                              ),
+                            ),
+                          (controller) => Effect.sync(() => controller.abort()),
+                        )
+                        if (before) yield* before(invocation)
+                        command.info = produce(command.info, (draft) => {
+                          draft.command = invocation.command
+                          draft.cwd = invocation.cwd
+                          draft.shell = invocation.shell
+                        })
+                      }).pipe(
+                        Effect.provide(caller),
+                        Effect.onExit((exit) => Deferred.done(prepared, exit)),
+                      )
+                      const args = ShellSelect.args(invocation.shell, invocation.command)
+                      // A trusted shell adapter may opt into a private, per-invocation
+                      // start frame. Spawning that adapter is not workload admission.
+                      const startToken = invocation.env.OPENCODE_SHELL_NOTIFY_START === "1" ? randomUUID() : undefined
+                      invocation.env.OPENCODE_SHELL_START_TOKEN = startToken
+                      const marker = startToken ? Buffer.from(`\x1e${startToken}\x1f`) : undefined
+                      const backpressure = startToken ? Buffer.from(`\x1e${startToken}:backpressure:`) : undefined
+                      let retryAfterMs: number | undefined
+                      const nativeStarted = Deferred.makeUnsafe<void>()
+                      const handle = yield* environment.spawner
+                        .spawn(
+                          ChildProcess.make(invocation.shell, args, {
+                            cwd: invocation.cwd,
+                            env: invocation.env,
+                            stdin: "ignore",
+                            detached: process.platform !== "win32",
+                            forceKillAfter: Duration.seconds(3),
+                          }),
+                        )
+                        .pipe(
+                          Effect.mapError(
+                            (cause) => new AppProcess.AppProcessError({ command: invocation.command, cause }),
                           ),
+                        )
+                      const stream = createWriteStream(file, { flags: attempt++ === 0 ? "w" : "a" })
+                      const outputDone = Latch.makeUnsafe()
+                      let pending = Buffer.alloc(0)
+                      let notified = !marker
+                      const write = (chunk: Uint8Array) =>
+                        Effect.callback<void, Error>((resume) => {
+                          // Backpressure must reach the child: a slow output file
+                          // must not turn its entire output into backend RAM.
+                          stream.write(chunk, (error) => {
+                            if (error) return resume(Effect.fail(error))
+                            command.size += chunk.length
+                            // Count while streaming so truncation notices never rescan the output file.
+                            for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
+                              command.newlines++
+                            resume(Effect.void)
+                          })
+                        })
+                      // Parse only stderr: unrelated stdout can interleave with a
+                      // split control frame without corrupting the notification.
+                      const capture = marker
+                        ? Stream.merge(
+                            handle.stdout,
+                            handle.stderr.pipe(
+                              Stream.mapEffect((chunk) =>
+                                Effect.gen(function* () {
+                                  if (notified) return chunk
+                                  const data = Buffer.concat([pending, chunk])
+                                  const index = data.indexOf(marker)
+                                  if (index !== -1) {
+                                    pending = Buffer.alloc(0)
+                                    notified = true
+                                    yield* Deferred.succeed(nativeStarted, undefined)
+                                    return Buffer.concat([
+                                      data.subarray(0, index),
+                                      data.subarray(index + marker.length),
+                                    ])
+                                  }
+                                  const rejected = data.indexOf(backpressure!)
+                                  const end = rejected === -1 ? -1 : data.indexOf(31, rejected + backpressure!.length)
+                                  if (end !== -1) {
+                                    const delay = data.subarray(rejected + backpressure!.length, end).toString("utf8")
+                                    if (/^[0-9]{1,5}$/.test(delay) && Number(delay) > 0 && Number(delay) <= 60000) {
+                                      retryAfterMs = Number(delay)
+                                      pending = Buffer.alloc(0)
+                                      return Buffer.concat([data.subarray(0, rejected), data.subarray(end + 1)])
+                                    }
+                                  }
+                                  // Retain only a possible split frame, never the whole output.
+                                  const held = Math.min(data.length, backpressure!.length + 5)
+                                  pending = data.subarray(data.length - held)
+                                  return data.subarray(0, data.length - held)
+                                }),
+                              ),
+                            ),
+                          )
+                        : handle.all
+                      const pump = capture.pipe(Stream.runForEach(write))
+                      runFork(
+                        Effect.gen(function* () {
+                          yield* pump
+                          yield* write(pending)
+                          yield* Effect.promise(
+                            () =>
+                              new Promise<void>((resolve) => {
+                                stream.end(() => resolve())
+                              }),
+                          )
+                        }).pipe(
+                          Effect.catch((cause) =>
+                            Deferred.fail(
+                              finished,
+                              new AppProcess.AppProcessError({ command: invocation.command, cause }),
+                            ),
+                          ),
+                          Effect.ensuring(outputDone.open),
                         ),
                       )
-                    : handle.all
-                  const pump = capture.pipe(Stream.runForEach(write))
-                  runFork(
-                    Effect.gen(function* () {
-                      yield* pump
-                      yield* write(pending)
                       yield* Effect.promise(
                         () =>
                           new Promise<void>((resolve) => {
-                            stream.end(() => resolve())
+                            stream.once("open", () => resolve())
+                            stream.once("error", () => resolve())
                           }),
                       )
-                    }).pipe(
-                      Effect.catch((cause) =>
-                        Deferred.fail(
-                          command.finished,
-                          new AppProcess.AppProcessError({ command: invocation.command, cause }),
-                        ),
-                      ),
-                      Effect.ensuring(outputDone.open),
-                    ),
-                  )
-                  yield* Effect.promise(
-                    () =>
-                      new Promise<void>((resolve) => {
-                        stream.once("open", () => resolve())
-                        stream.once("error", () => resolve())
-                      }),
-                  )
 
-                  const finish = (status: Info["status"], exit?: number, beforeWait = Effect.void, signal?: string) =>
-                    Effect.gen(function* () {
-                      if (command.finishing) return
-                      command.finishing = true
-                      yield* beforeWait
-                      yield* outputDone.await
-                      // This only closes the worker's native scope. Publish the
-                      // terminal outcome outside that scope, after cleanup completes.
-                      yield* Deferred.succeed(command.finished, { status, exit, signal })
-                    })
+                      let finishing = false
+                      const finish = (
+                        status: Info["status"],
+                        exit?: number,
+                        beforeWait = Effect.void,
+                        signal?: string,
+                      ) =>
+                        Effect.gen(function* () {
+                          if (finishing) return
+                          finishing = true
+                          yield* beforeWait
+                          yield* outputDone.await
+                          // This only closes the worker's native scope. Publish the
+                          // terminal outcome outside that scope, after cleanup completes.
+                          yield* Deferred.succeed(finished, { status, exit, signal })
+                        })
 
-                  command.timeout = (duration) =>
-                    Effect.gen(function* () {
-                      if (command.timeoutFiber) yield* Fiber.interrupt(command.timeoutFiber)
-                      command.timeoutFiber = undefined
-                      if (duration === 0 || command.info.status !== "running") return
-                      command.timeoutFiber = runFork(
-                        Effect.sleep(Duration.millis(duration)).pipe(
-                          Effect.flatMap(() =>
+                      command.timeout = (duration) =>
+                        Effect.gen(function* () {
+                          if (command.timeoutFiber) yield* Fiber.interrupt(command.timeoutFiber)
+                          command.timeoutFiber = undefined
+                          if (duration === 0 || command.info.status !== "running") return
+                          command.timeoutFiber = runFork(
+                            Effect.sleep(Duration.millis(duration)).pipe(
+                              Effect.flatMap(() =>
+                                finish(
+                                  "timeout",
+                                  undefined,
+                                  handle
+                                    .kill({ forceKillAfter: Duration.seconds(3) })
+                                    .pipe(Effect.catch(() => Effect.void)),
+                                ),
+                              ),
+                            ),
+                          )
+                        })
+
+                      runFork(
+                        handle.exitCode.pipe(
+                          Effect.flatMap((code) => finish("exited", code)),
+                          Effect.catch((error) =>
                             finish(
-                              "timeout",
+                              "exited",
                               undefined,
-                              handle
-                                .kill({ forceKillAfter: Duration.seconds(3) })
-                                .pipe(Effect.catch(() => Effect.void)),
+                              Effect.void,
+                              error.cause instanceof CrossSpawnSpawner.KilledBySignal ? error.cause.signal : undefined,
                             ),
                           ),
                         ),
                       )
-                    })
 
-                  runFork(
-                    handle.exitCode.pipe(
-                      Effect.flatMap((code) => finish("exited", code)),
-                      Effect.catch((error) =>
-                        finish(
-                          "exited",
-                          undefined,
-                          Effect.void,
-                          error.cause instanceof CrossSpawnSpawner.KilledBySignal ? error.cause.signal : undefined,
-                        ),
-                      ),
-                    ),
-                  )
-
-                  if (marker) {
-                    const entered = Effect.raceFirst(
-                      Deferred.await(nativeStarted),
-                      Deferred.await(command.finished).pipe(
-                        Effect.andThen(
-                          Effect.fail(
-                            new AppProcess.AppProcessError({
+                      if (marker) {
+                        const entered = Effect.raceFirst(
+                          Deferred.await(nativeStarted),
+                          Effect.gen(function* () {
+                            const result = yield* Deferred.await(finished)
+                            if (
+                              result.status === "exited" &&
+                              result.exit === 75 &&
+                              retryAfterMs !== undefined &&
+                              !(yield* Deferred.isDone(nativeStarted))
+                            )
+                              return retryAfterMs
+                            return yield* new AppProcess.AppProcessError({
                               command: invocation.command,
                               cause: new Error("Shell adapter exited before native admission"),
-                            }),
-                          ),
-                        ),
-                      ),
-                    )
-                    yield* !input.queueTimeout
-                      ? entered
-                      : entered.pipe(
-                          Effect.timeoutOrElse({
-                            duration: Duration.millis(Math.max(0, input.queueTimeout - (Date.now() - waitingSince))),
-                            orElse: () =>
-                              Effect.fail(
-                                new AppProcess.AppProcessError({
-                                  command: invocation.command,
-                                  cause: new Error("Timed out waiting for native admission"),
-                                }),
-                              ),
+                            })
                           }),
                         )
-                  }
-                  command.info = produce(command.info, (draft) => {
-                    draft.status = "running"
-                    draft.pid = handle.pid
-                    draft.time.started = Date.now()
-                  })
-                  yield* command.timeout(command.duration ?? invocation.timeout)
-                  yield* bus.publish(Shell.Event.Started, { info: command.info })
-                  yield* Deferred.succeed(command.started, command.info)
-                  // Hold the handle's scope open until the command terminates; closing it earlier would
-                  // release (kill) the process before its exit is observed.
-                  return { ...command.info, ...(yield* Deferred.await(command.finished)) }
-                }),
-              ).pipe(
+                        const retry = yield* !input.queueTimeout
+                          ? entered
+                          : entered.pipe(
+                              Effect.timeoutOrElse({
+                                duration: Duration.millis(
+                                  Math.max(0, input.queueTimeout - (Date.now() - waitingSince)),
+                                ),
+                                orElse: () =>
+                                  Effect.fail(
+                                    new AppProcess.AppProcessError({
+                                      command: invocation.command,
+                                      cause: new Error("Timed out waiting for native admission"),
+                                    }),
+                                  ),
+                              }),
+                            )
+                        if (retry !== undefined) return { retryAfterMs: retry }
+                      }
+                      command.info = produce(command.info, (draft) => {
+                        draft.status = "running"
+                        draft.pid = handle.pid
+                        draft.time.started = Date.now()
+                      })
+                      yield* command.timeout(command.duration ?? invocation.timeout)
+                      yield* bus.publish(Shell.Event.Started, { info: command.info })
+                      yield* Deferred.succeed(command.started, command.info)
+                      // Hold the handle's scope open until the command terminates; closing it earlier would
+                      // release (kill) the process before its exit is observed.
+                      return { ...command.info, ...(yield* Deferred.await(finished)) }
+                    }),
+                  )
+                  if (outcome.retryAfterMs === undefined) return outcome
+                  command.timeout = undefined
+                  // The native scope and its output pump have closed. This is
+                  // typed nonacceptance, never a retry of a possibly entered payload.
+                  yield* Effect.sleep(
+                    Duration.millis(
+                      input.queueTimeout
+                        ? Math.min(outcome.retryAfterMs, Math.max(0, input.queueTimeout - (Date.now() - waitingSince)))
+                        : outcome.retryAfterMs,
+                    ),
+                  )
+                }
+              }).pipe(
                 Effect.onExit((exit) =>
                   Effect.gen(function* () {
                     command.info = produce(Exit.isSuccess(exit) ? exit.value : command.info, (draft) => {
