@@ -73,6 +73,10 @@ const QUESTION_CANCELLED_FEEDBACK =
 const PERMISSION_REJECTED_FEEDBACK =
   "This non-interactive run cannot ask the user for permission, so the request was rejected. Continue without this action."
 
+// After a signal, an in-flight admission gets this long to settle before it is
+// aborted, so a stuck transport cannot block exit. Mutable for tests.
+export const admissionGrace = { ms: 5_000 }
+
 export async function runNonInteractivePrompt(input: Input) {
   const controller = new AbortController()
   const stream = input.client.event.subscribe({ signal: controller.signal })[Symbol.asyncIterator]()
@@ -95,6 +99,8 @@ export async function runNonInteractivePrompt(input: Input) {
   let v1InvalidOutput = false
   let prePromotionError: { message: string; [key: string]: unknown } | undefined
   let finalizing = false
+  let admission: AbortController | undefined
+  let grace: ReturnType<typeof setTimeout> | undefined
   let pendingStep: { timestamp: number; part: Record<string, unknown>; label: string } | undefined
 
   const emit = (type: string, timestamp: number, data: Record<string, unknown>) => {
@@ -680,6 +686,8 @@ export async function runNonInteractivePrompt(input: Input) {
     if (interrupted) return
     interrupted = true
     process.exitCode = 130
+    grace = setTimeout(() => admission?.abort(), admissionGrace.ms)
+    grace.unref?.()
     void input.client.session.interrupt({ sessionID: input.sessionID }).catch(() => {})
   }
   process.on("SIGINT", interrupt)
@@ -712,14 +720,18 @@ export async function runNonInteractivePrompt(input: Input) {
     if (interrupted) return
     submitted = true
     completed = consume()
+    admission = new AbortController()
     const response = await input.client.session
-      .prompt({
-        sessionID: input.sessionID,
-        id: messageID,
-        text: [input.message, ...prepared.flatMap((file) => (file.text ? [file.text] : []))].join("\n\n"),
-        files: prepared.flatMap((file) => (file.attachment ? [file.attachment] : [])),
-        delivery: "steer",
-      })
+      .prompt(
+        {
+          sessionID: input.sessionID,
+          id: messageID,
+          text: [input.message, ...prepared.flatMap((file) => (file.text ? [file.text] : []))].join("\n\n"),
+          files: prepared.flatMap((file) => (file.attachment ? [file.attachment] : [])),
+          delivery: "steer",
+        },
+        { signal: admission.signal },
+      )
       .catch(async (error) => {
         if (interrupted) {
           await input.client.session.interrupt({ sessionID: input.sessionID }).catch(() => {})
@@ -778,6 +790,7 @@ export async function runNonInteractivePrompt(input: Input) {
     }
   } finally {
     controller.abort()
+    clearTimeout(grace)
     try {
       if (interrupted) {
         // An interrupt acknowledges the request, not cleanup. Admission must

@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test"
 import { OpenCode } from "@opencode/client/promise"
-import { runNonInteractivePrompt } from "../../src/run/noninteractive"
+import { admissionGrace, runNonInteractivePrompt } from "../../src/run/noninteractive"
 
 afterEach(() => mock.restore())
 
@@ -96,3 +96,53 @@ for (const failure of ["accepted", "admission", "interrupt", "wait"] as const) {
     }
   })
 }
+
+test("a stuck admission is aborted after the signal grace and reports an unknown outcome", async () => {
+  const client = OpenCode.make({ baseUrl: "https://opencode.test" })
+  const originalExitCode = process.exitCode
+  const originalGrace = admissionGrace.ms
+  admissionGrace.ms = 20
+  spyOn(process.stdout, "write").mockImplementation(() => true)
+  spyOn(client.event, "subscribe").mockImplementation(({ signal } = {}) =>
+    (async function* () {
+      yield { id: "evt_connected", type: "server.connected" as const, data: {} }
+      await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }))
+    })(),
+  )
+  spyOn(client.session, "interrupt").mockResolvedValue({ interrupted: true })
+  spyOn(client.session, "wait").mockResolvedValue(undefined as never)
+  spyOn(client.permission, "list").mockResolvedValue([])
+  spyOn(client.session.form, "list").mockResolvedValue([])
+  spyOn(client.message, "list").mockResolvedValue({ data: [], cursor: {} })
+  // The transport never answers; only the grace abort can settle it.
+  spyOn(client.session, "prompt").mockImplementation(
+    (_input, options) =>
+      new Promise((_resolve, reject) => {
+        process.emit("SIGINT")
+        options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+      }),
+  )
+  try {
+    const error = await runNonInteractivePrompt({
+      client,
+      sessionID: "ses_stuck",
+      location: { directory: "/review" },
+      message: "review",
+      files: [],
+      thinking: false,
+      format: "json",
+      auto: false,
+      attached: true,
+      renderTool: async () => {},
+      renderToolError: async () => {},
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(String(error)).toContain("admission outcome unknown")
+    expect(process.exitCode).toBe(130)
+  } finally {
+    admissionGrace.ms = originalGrace
+    process.exitCode = originalExitCode ?? 0
+  }
+}, 5_000)
