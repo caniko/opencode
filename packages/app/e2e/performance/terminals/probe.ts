@@ -48,10 +48,18 @@ Terminal.prototype.open = function (element) {
   if (new URL(location.href).searchParams.has("terminalDrawProbe")) {
     const context = element.querySelector("canvas")!.getContext("2d")!
     const draw = context.drawImage
-    context.drawImage = function (...args: unknown[]) {
+    context.drawImage = function (
+      ...args:
+        | [CanvasImageSource, number, number]
+        | [CanvasImageSource, number, number, number, number]
+        | [CanvasImageSource, number, number, number, number, number, number, number, number]
+    ) {
       probe.draws++
       if (hidden) probe.hiddenDraws++
-      Reflect.apply(draw, this, args)
+      const invoke = draw.bind(this)
+      if (args.length === 3) return invoke(...args)
+      if (args.length === 5) return invoke(...args)
+      invoke(...args)
     }
   }
 }
