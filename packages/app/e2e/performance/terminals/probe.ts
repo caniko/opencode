@@ -51,7 +51,7 @@ Terminal.prototype.open = function (element) {
     context.drawImage = function (...args: unknown[]) {
       probe.draws++
       if (hidden) probe.hiddenDraws++
-      draw.apply(this, args)
+      Reflect.apply(draw, this, args)
     }
   }
 }
