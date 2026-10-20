@@ -56,7 +56,7 @@ type Active = {
   // Resolves with the terminal Info once the command exits, times out, or is killed. A wait
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
-  finished: Deferred.Deferred<Pick<Info, "status" | "exit" | "signal">>
+  finished: Deferred.Deferred<Pick<Info, "status" | "exit" | "signal">, AppProcess.AppProcessError>
   started: Deferred.Deferred<Info, AppProcess.AppProcessError>
   finishing?: boolean
   stop?: Effect.Effect<void>
@@ -333,7 +333,7 @@ const layer = () =>
               size: 0,
               newlines: 0,
               done: Deferred.makeUnsafe<Info, NotFoundError>(),
-              finished: Deferred.makeUnsafe<Pick<Info, "status" | "exit" | "signal">>(),
+              finished: Deferred.makeUnsafe<Pick<Info, "status" | "exit" | "signal">, AppProcess.AppProcessError>(),
               started: Deferred.makeUnsafe<Info, AppProcess.AppProcessError>(),
             }
             // No yielding between duplicate detection and registration: preparation
@@ -441,12 +441,17 @@ const layer = () =>
                   let pending = Buffer.alloc(0)
                   let notified = !marker
                   const write = (chunk: Uint8Array) =>
-                    Effect.sync(() => {
-                      stream.write(chunk)
-                      command.size += chunk.length
-                      // Count while streaming so truncation notices never rescan the output file.
-                      for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
-                        command.newlines++
+                    Effect.callback<void, Error>((resume) => {
+                      // Backpressure must reach the child: a slow output file
+                      // must not turn its entire output into backend RAM.
+                      stream.write(chunk, (error) => {
+                        if (error) return resume(Effect.fail(error))
+                        command.size += chunk.length
+                        // Count while streaming so truncation notices never rescan the output file.
+                        for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
+                          command.newlines++
+                        resume(Effect.void)
+                      })
                     })
                   // Parse only stderr: unrelated stdout can interleave with a
                   // split control frame without corrupting the notification.
@@ -477,7 +482,7 @@ const layer = () =>
                   const pump = capture.pipe(Stream.runForEach(write))
                   runFork(
                     Effect.gen(function* () {
-                      yield* pump.pipe(Effect.catch(() => Effect.void))
+                      yield* pump
                       yield* write(pending)
                       yield* Effect.promise(
                         () =>
@@ -485,8 +490,15 @@ const layer = () =>
                             stream.end(() => resolve())
                           }),
                       )
-                      yield* outputDone.open
-                    }),
+                    }).pipe(
+                      Effect.catch((cause) =>
+                        Deferred.fail(
+                          command.finished,
+                          new AppProcess.AppProcessError({ command: invocation.command, cause }),
+                        ),
+                      ),
+                      Effect.ensuring(outputDone.open),
+                    ),
                   )
                   yield* Effect.promise(
                     () =>
