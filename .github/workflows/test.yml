@@ -223,10 +223,10 @@ jobs:
           # suites on both hosts so process fixtures retain their original deadlines.
           concurrency=1
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            GITHUB_ACTIONS=false bun turbo test --concurrency="$concurrency"
+            GITHUB_ACTIONS=false bun turbo test --concurrency="$concurrency" --log-order=stream
             exit 0
           fi
-          GITHUB_ACTIONS=false bun turbo test --affected --concurrency="$concurrency"
+          GITHUB_ACTIONS=false bun turbo test --affected --concurrency="$concurrency" --log-order=stream
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
