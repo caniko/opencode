@@ -1,0 +1,41 @@
+diff --git a/lib/clone.js b/lib/clone.js
+--- a/lib/clone.js
++++ b/lib/clone.js
+@@ -112,7 +112,8 @@ const branch = (repo, revDoc, target, opts) => {
+     revDoc.ref,
+     repo,
+     target,
+-    '--recurse-submodules',
++    '--config',
++    'submodule.active=.',
+   ]
+   if (maybeShallow(repo, opts)) {
+     args.push('--depth=1')
+@@ -120,5 +121,7 @@ const branch = (repo, revDoc, target, opts) => {
+   if (isWindows(opts)) {
+     args.push('--config', 'core.longpaths=true')
+   }
+-  return spawn(args, opts).then(() => revDoc.sha)
++  return spawn(args, opts)
++    .then(() => updateSubmodules(target, opts))
++    .then(() => revDoc.sha)
+ }
+@@ -129,7 +132,8 @@ const plain = (repo, revDoc, target, opts) => {
+     'clone',
+     repo,
+     target,
+-    '--recurse-submodules',
++    '--config',
++    'submodule.active=.',
+   ]
+   if (maybeShallow(repo, opts)) {
+     args.push('--depth=1')
+@@ -137,5 +141,7 @@ const plain = (repo, revDoc, target, opts) => {
+   if (isWindows(opts)) {
+     args.push('--config', 'core.longpaths=true')
+   }
+-  return spawn(args, opts).then(() => revDoc.sha)
++  return spawn(args, opts)
++    .then(() => updateSubmodules(target, opts))
++    .then(() => revDoc.sha)
+ }
