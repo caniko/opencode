@@ -289,6 +289,7 @@ jobs:
     env:
       E2E_ENABLED: ${{ needs.affected.outputs.app == 'true' && github.ref_name != 'v2' && github.head_ref != 'v2' }}
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      EVIDENCE: ${{ github.workspace }}/browser-evidence
     defaults:
       run:
         shell: bash
@@ -297,7 +298,30 @@ jobs:
         if: env.E2E_ENABLED == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Bind original browser attempt to exact source and hosted OS
+        if: env.E2E_ENABLED == 'true'
+        env:
+          CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUNNER_IDENTITY: ${{ toJSON(runner) }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          mkdir -p "$EVIDENCE"
+          git rev-parse HEAD > "$EVIDENCE/revision"
+          printf '%s\n' "$RUNNER_IDENTITY" > "$EVIDENCE/runner.json"
+          env | grep -E '^(GITHUB_RUN_ID|GITHUB_RUN_ATTEMPT|GITHUB_WORKFLOW_REF|GITHUB_WORKFLOW_SHA|RUNNER_ENVIRONMENT|RUNNER_OS|RUNNER_ARCH|ImageOS|ImageVersion)=' | sort > "$EVIDENCE/environment"
+          uname -a > "$EVIDENCE/host"
+          if [ "$RUNNER_OS" = Linux ]; then
+            cp /etc/os-release "$EVIDENCE/os-release"
+          else
+            MSYS_NO_PATHCONV=1 cmd.exe /c ver > "$EVIDENCE/os-version"
+          fi
+          cp "$GITHUB_EVENT_PATH" "$EVIDENCE/event.json"
 
       - name: Setup Node
         if: env.E2E_ENABLED == 'true'
@@ -337,33 +361,90 @@ jobs:
 
       - name: Run app e2e tests against production build
         if: env.E2E_ENABLED == 'true'
-        run: bun --cwd packages/app test:e2e:built
+        run: |
+          set -euo pipefail
+          bun --version > "$EVIDENCE/bun-version"
+          node --version > "$EVIDENCE/node-version"
+          bun --cwd packages/app -e 'console.log(require("@playwright/test/package.json").version)' > "$EVIDENCE/playwright-version"
+          sha256sum "$(command -v bun)" "$(command -v node)" bun.lock flake.lock > "$EVIDENCE/runtime.sha256"
+          if [ "$RUNNER_OS" = Linux ]; then
+            find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \) -exec sha256sum {} + >> "$EVIDENCE/runtime.sha256"
+          fi
+          bun --cwd packages/app test:e2e:built --retries=0 --repeat-each=1 --trace=retain-on-failure --reporter=line,html,json 2>&1 | tee "$EVIDENCE/app.log"
         env:
           CI: true
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-evidence/app.json
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ github.workspace }}/packages/app/e2e/playwright-report
         timeout-minutes: 30
 
       - name: Verify service worker precaching and upgrades
-        if: env.E2E_ENABLED == 'true'
+        if: ${{ !cancelled() && env.E2E_ENABLED == 'true' }}
         working-directory: packages/app
-        run: bunx playwright test --config e2e/service-worker/playwright.config.ts
+        run: |
+          set -euo pipefail
+          bunx playwright test --config e2e/service-worker/playwright.config.ts --retries=0 --repeat-each=1 --trace=retain-on-failure --reporter=line,json 2>&1 | tee "$EVIDENCE/service-worker.log"
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-evidence/service-worker.json
         timeout-minutes: 5
 
       - name: Run session UI component tests
         if: ${{ !cancelled() && env.E2E_ENABLED == 'true' }}
-        run: bun --cwd packages/session-ui test:components
+        run: |
+          set -euo pipefail
+          bun --cwd packages/session-ui test:components --retries=0 --repeat-each=1 --trace=retain-on-failure --reporter=line,html,json 2>&1 | tee "$EVIDENCE/components.log"
         env:
           CI: true
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-evidence/components.json
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ github.workspace }}/packages/session-ui/component-tests/playwright-report
         timeout-minutes: 15
 
+      - name: Require complete first-pass Linux browser reports
+        if: ${{ !cancelled() && env.E2E_ENABLED == 'true' && runner.os == 'Linux' }}
+        run: |
+          set -euo pipefail
+          for lane in app service-worker components; do
+            jq -e '
+              .errors == [] and
+              .stats.expected > 0 and .stats.unexpected == 0 and .stats.flaky == 0 and .stats.skipped == 0 and
+              (.config.projects | length > 0 and all(.[]; .retries == 0 and .repeatEach == 1)) and
+              ([.suites[] | .. | objects | select(has("tests")) | .tests[]] |
+                length > 0 and all(.[]; .expectedStatus == "passed" and .status == "expected" and
+                  (.results | length == 1 and all(.[]; .retry == 0 and .status == "passed"))))
+            ' "$EVIDENCE/$lane.json"
+          done
+
+      - name: Seal original browser evidence
+        if: always() && env.E2E_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          find browser-evidence packages/app/e2e/test-results packages/app/e2e/playwright-report packages/session-ui/component-tests/test-results packages/session-ui/component-tests/playwright-report -type f ! -name members.sha256 -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE/members.sha256"
+
       - name: Upload Playwright artifacts
+        id: browser-evidence
         if: always() && env.E2E_ENABLED == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: playwright-${{ matrix.settings.name }}-${{ github.run_attempt }}
-          if-no-files-found: ignore
-          retention-days: 7
+          name: playwright-${{ matrix.settings.name }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 31
           path: |
+            browser-evidence/
             packages/app/e2e/test-results
             packages/app/e2e/playwright-report
             packages/session-ui/component-tests/test-results
             packages/session-ui/component-tests/playwright-report
+
+      - name: Verify actual browser evidence retention and digest
+        if: always() && steps.browser-evidence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.browser-evidence.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.browser-evidence.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/browser-artifact.json"
+          jq -e --arg digest "sha256:$ARTIFACT_DIGEST" '
+            .expired == false and .digest == $digest and
+            ((.expires_at | fromdateiso8601) - (.created_at | fromdateiso8601) >= 2592000)
+          ' "$RUNNER_TEMP/browser-artifact.json"
