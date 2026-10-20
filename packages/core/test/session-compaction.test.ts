@@ -618,6 +618,60 @@ it.effect("pre-reduction custody owns the whole checkpoint and fails closed", ()
   }),
 )
 
+it.effect("custody plans exclude the open marker, bill supplied usage and fit the request budget", () =>
+  Effect.gen(function* () {
+    requests = []
+    const hooks = yield* PluginHooks.Service
+    const store = yield* SessionStore.Service
+    const compaction = yield* SessionCompaction.Service
+    const session = yield* insertSession(Session.ID.make("ses_custody_budget"))
+    const user = (text: string) => ({
+      id: SessionMessage.ID.create(),
+      type: "user" as const,
+      text,
+      time: { created: DateTime.makeUnsafe(0) },
+    })
+    const update = {
+      id: SessionMessage.ID.create(),
+      type: "system" as const,
+      text: "Instructions updated: " + "y".repeat(40_000),
+      time: { created: DateTime.makeUnsafe(1) },
+    }
+    const budgets: number[] = []
+    yield* hooks.register("session", "compaction.plan", (event) =>
+      Effect.sync(() => {
+        budgets.push(event.budgetTokens)
+        expect(event.records.some((record) => record.type === "compaction" && record.status === "running")).toBe(false)
+        event.result = {
+          summary: "Keep the plan.",
+          recent: "",
+          custody: "a".repeat(64),
+          planID: "b".repeat(64),
+          providerState: { owner: "custody" },
+          tokens: { input: 10, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+        }
+      }),
+    )
+    const small = user("Keep the plan.")
+    expect(yield* compactManually(session, [small])).toEqual({ status: "completed" })
+    expect((yield* store.context(session.id)).at(-1)).toMatchObject({
+      type: "compaction",
+      status: "completed",
+      providerState: { owner: "custody" },
+      tokens: { input: 10, output: 4 },
+    })
+    expect(yield* compactManually(session, [small, update])).toEqual({ status: "completed" })
+    // Epoch instruction updates survive completion, so they reduce the plan budget.
+    expect(budgets[1]!).toBeLessThan(budgets[0]! - 5_000)
+    expect(
+      yield* compaction.compact({ reason: "overflow", context: loaded(session, [user("z".repeat(400_000))]) }),
+    ).toEqual({ status: "completed" })
+    // Overflow plans use the shrunken budget, not the full ceiling that was just rejected.
+    expect(budgets[2]!).toBeLessThan(budgets[0]!)
+    expect(requests).toHaveLength(0)
+  }),
+)
+
 it.effect("custody sees original users across repeated, automatic and native overflow compaction", () =>
   Effect.gen(function* () {
     requests = []

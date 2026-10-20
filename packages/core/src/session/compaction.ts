@@ -215,7 +215,8 @@ export const layer = Layer.effect(
         trigger.reason === "overflow" ? Math.min(cap, Math.floor(estimateContext(context) * SHRINK_STEPS[0])) : cap
 
       const compaction = Effect.gen(function* () {
-        const planned = yield* owned(trigger, cap)
+        // An overflow plan must fit the same shrunken budget as local reduction.
+        const planned = yield* owned(trigger, budget)
         if (planned) return planned
         return yield* context.model.compaction?.type === "native"
           ? compactNatively(trigger, budget, settings.keep)
@@ -248,9 +249,16 @@ export const layer = Layer.effect(
       const context = trigger.context
       if (!(yield* hooks.has("session", "compaction.plan", context.model.ref.providerID))) return undefined
       const archived = yield* SessionHistory.archive(db, context.session.id).pipe(Effect.orDie)
-      const records = new Map(archived.map((message) => [message.id, message]))
-      for (const message of context.messages) if (!records.has(message.id)) records.set(message.id, message)
-      const baseline = transcript(context, [])
+      // The open compaction marker is this request, not source history.
+      const source = (message: SessionMessage.Info) => !(message.type === "compaction" && message.status === "running")
+      const records = new Map(archived.filter(source).map((message) => [message.id, message]))
+      for (const message of context.messages)
+        if (source(message) && !records.has(message.id)) records.set(message.id, message)
+      // Completion advances the instruction baseline, so epoch instruction updates still count against the budget.
+      const baseline = transcript(
+        context,
+        context.messages.filter((message) => message.type === "system"),
+      )
       const budgetTokens = Math.max(
         0,
         Math.floor(ceiling - estimateRequest({ ...baseline, tools: context.tools.definitions }) - 2048),
@@ -284,9 +292,9 @@ export const layer = Layer.effect(
           reason: "auto",
           recent: supplied.recent,
         })
+      const result = yield* fromHook(context, supplied, supplied.recent)
       return {
-        text: supplied.summary,
-        recent: supplied.recent,
+        ...result,
         metadata: { ...supplied.metadata, custody: supplied.custody, pruningPlan: supplied.planID },
       }
     })
