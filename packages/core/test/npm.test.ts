@@ -250,11 +250,18 @@ describe("Npm.add", () => {
 
   test.each(["commit", "branch"])("installs a Git package from an npm ::path: subdirectory at a %s", async (ref) => {
     await using tmp = await tmpdir()
+    const started = performance.now()
+    console.info("npm ::path fixture started", { ref })
     const fixture = await createGitFixture(tmp.path)
+    console.info("npm ::path fixture created", { ref, elapsed: performance.now() - started })
     const spec = `git+${pathToFileURL(fixture.repository).href}#${ref === "commit" ? fixture.commit : "fixture-branch"}::path:packages/subdirectory-plugin`
     const result = await Effect.gen(function* () {
       const npm = yield* Npm.Service
-      return { added: yield* npm.add(spec), outdated: yield* npm.check(spec) }
+      const added = yield* npm.add(spec)
+      console.info("npm ::path package added", { ref, elapsed: performance.now() - started })
+      const outdated = yield* npm.check(spec)
+      console.info("npm ::path revision checked", { ref, elapsed: performance.now() - started })
+      return { added, outdated }
     }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
 
     expect(result.added.directory).toEndWith(path.join("node_modules", "fixture-subdirectory-plugin"))

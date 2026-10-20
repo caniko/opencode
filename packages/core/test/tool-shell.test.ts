@@ -783,28 +783,42 @@ describe("ShellTool ordinary shell syntax", () => {
       "Write-Output @'\nhello\n'@",
     ]) {
       test(`PowerShell ${portable ? "native" : "legacy"}: ordinary syntax reuses approvals: ${command}`, () =>
-        withScanner(
-          portable,
-          (registry, directory) =>
-            Effect.gen(function* () {
-              const saved = yield* PermissionSaved.Service
-              const location = yield* Location.Service
-              yield* saved.add({
-                projectID: location.project.id,
-                action: "shell",
-                resources: ["Write-Output *", "Show-Value *"],
-              })
-              const result = yield* runPermissionCommand(registry, command, path.join(directory.active, "marker"), [])
-              expect(result.requests).toEqual([])
-              expect(result.exit).toMatchObject({
-                _tag: "Success",
-                value: { status: "completed", metadata: { exit: 0 } },
-              })
-              if (Exit.isSuccess(result.exit))
-                expect(result.exit.value.content?.[0]).toEqual(Expected.text(isWindows ? "hello\r\n" : "hello\n"))
-            }),
-          pwsh ?? "pwsh",
-        ))
+        Effect.gen(function* () {
+          const started = performance.now()
+          yield* Effect.logInfo("ordinary PowerShell permission fixture started", { portable, command, shell: pwsh })
+          return yield* withScanner(
+            portable,
+            (registry, directory) =>
+              Effect.gen(function* () {
+                const saved = yield* PermissionSaved.Service
+                const location = yield* Location.Service
+                yield* saved.add({
+                  projectID: location.project.id,
+                  action: "shell",
+                  resources: ["Write-Output *", "Show-Value *"],
+                })
+                yield* Effect.logInfo("ordinary PowerShell permission fixture ready", {
+                  portable,
+                  command,
+                  elapsed: performance.now() - started,
+                })
+                const result = yield* runPermissionCommand(registry, command, path.join(directory.active, "marker"), [])
+                yield* Effect.logInfo("ordinary PowerShell permission command settled", {
+                  portable,
+                  command,
+                  elapsed: performance.now() - started,
+                })
+                expect(result.requests).toEqual([])
+                expect(result.exit).toMatchObject({
+                  _tag: "Success",
+                  value: { status: "completed", metadata: { exit: 0 } },
+                })
+                if (Exit.isSuccess(result.exit))
+                  expect(result.exit.value.content?.[0]).toEqual(Expected.text(isWindows ? "hello\r\n" : "hello\n"))
+              }),
+            pwsh ?? "pwsh",
+          )
+        }))
     }
   }
 
