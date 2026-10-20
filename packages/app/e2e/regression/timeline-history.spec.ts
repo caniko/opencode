@@ -114,9 +114,16 @@ test.describe("timeline history", () => {
       await expect
         .poll(async () => {
           const next = await visibleTimeline(page)
-          return held.length > 0 || (next.signature !== state.signature && next.covered)
+          return {
+            progressed: held.length > 0 || (next.signature !== state.signature && next.covered),
+            previous: state,
+            next,
+            missingParts: expectedParts.filter((id) => !seenParts.has(id)),
+            missingMessages: expectedMessages.filter((id) => !seenMessages.has(id)),
+            loads,
+          }
         })
-        .toBe(true)
+        .toMatchObject({ progressed: true })
     }
 
     expect(expectedParts.filter((id) => !seenParts.has(id))).toEqual([])
