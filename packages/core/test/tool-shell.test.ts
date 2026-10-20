@@ -2153,7 +2153,9 @@ describe("ShellTool", () => {
                 type: "text",
                 text: "You will be notified automatically when the command finishes. The notification will include the command's output. Unless the user explicitly asks otherwise, DO NOT poll for completion, even if you need the final result to continue. Repeatedly sleeping and reading or searching the output file is polling, not useful work. You may read the current output if it lets you do useful work now, but do not repeatedly check it while waiting for the command to finish. Keep working on anything that does not depend on the result. If you have nothing else to do, end your response; you will be resumed automatically when the command finishes.",
               })
-              yield* Effect.sleep(Duration.millis(100))
+              // A preserved timeout settles only after native cleanup, which is slow on Windows.
+              if (timeout !== undefined) yield* shell.wait(id).pipe(Effect.timeout("5 seconds"))
+              else yield* Effect.sleep(Duration.millis(100))
               expect((yield* shell.get(id)).status).toBe(timeout === undefined ? "running" : "timeout")
               if (timeout === undefined) expect((yield* shell.list()).map((info) => info.id)).toContain(id)
               if (timeout !== undefined) expect((yield* shell.list()).map((info) => info.id)).not.toContain(id)

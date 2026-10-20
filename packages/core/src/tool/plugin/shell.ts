@@ -325,11 +325,18 @@ export const Plugin = {
               }
 
               const result = yield* Effect.gen(function* () {
-                const ready = yield* shell.started(info.id).pipe(
-                  Effect.catch(() => Effect.void),
-                  Effect.timeoutOption("250 millis"),
+                // Hand off only real external waits; failures settle through the blocking path.
+                const ready = yield* Effect.raceFirst(
+                  shell.started(info.id).pipe(
+                    Effect.catch(() => Effect.void),
+                    Effect.as(true),
+                  ),
+                  shell.stalled(info.id).pipe(
+                    Effect.catch(() => Effect.never),
+                    Effect.as(false),
+                  ),
                 )
-                if (ready._tag === "None") {
+                if (!ready) {
                   const queued = yield* jobs.background(job.id)
                   if (queued)
                     return {

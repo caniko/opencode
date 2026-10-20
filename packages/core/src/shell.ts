@@ -35,6 +35,8 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Shell.No
 const EXITED_LIMIT = 25
 export const RETENTION = Duration.days(7)
 export const DIRECTORY = "shell"
+// Plugin preparation or native admission waiting this long hands a foreground caller a queued handle.
+export const STALL = Duration.millis(250)
 export const RECONCILING =
   "Native workload completion was not proven; the outcome is reconciling and will not be replayed automatically. Inspect native execution and any side effects before retrying."
 
@@ -59,6 +61,7 @@ type Active = {
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
   started: Deferred.Deferred<Info, AppProcess.AppProcessError>
+  stalled: Deferred.Deferred<void>
   stop?: Effect.Effect<void>
   timeoutFiber?: Fiber.Fiber<void>
   timeout?: (duration: number) => Effect.Effect<void>
@@ -87,6 +90,9 @@ export interface Interface {
   // NotFoundError if the command is unknown or is removed before it terminates.
   readonly wait: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError>
   readonly started: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError | AppProcess.AppProcessError>
+  // Resolves once plugin preparation or native admission has kept the command waiting for STALL.
+  // Local authorization and spawning never count, so slow hosts do not misreport queueing.
+  readonly stalled: (id: Shell.ID) => Effect.Effect<void, NotFoundError>
   // A known shell's terminal state and bounded tail. Missing capture remains distinct from its exit status.
   readonly result: (started: Shell.Info) => Effect.Effect<ShellResult.Result>
   // Replaces the running command's timeout from now; zero clears it.
@@ -219,6 +225,10 @@ const layer = () =>
         return yield* Deferred.await((yield* require(id)).started)
       })
 
+      const stalled = Effect.fn("Shell.stalled")(function* (id: Shell.ID) {
+        return yield* Deferred.await((yield* require(id)).stalled)
+      })
+
       const timeout = Effect.fn("Shell.timeout")(function* (id: Shell.ID, duration: number) {
         const command = yield* require(id)
         if (command.info.status === "queued") {
@@ -336,7 +346,15 @@ const layer = () =>
               newlines: 0,
               done: Deferred.makeUnsafe<Info, NotFoundError>(),
               started: Deferred.makeUnsafe<Info, AppProcess.AppProcessError>(),
+              stalled: Deferred.makeUnsafe<void>(),
             }
+            const waiting = <A, E2, R2>(effect: Effect.Effect<A, E2, R2>) =>
+              Effect.suspend(() => {
+                const timer = runFork(
+                  Effect.sleep(STALL).pipe(Effect.andThen(Deferred.succeed(command.stalled, undefined))),
+                )
+                return effect.pipe(Effect.ensuring(Fiber.interrupt(timer)))
+              })
             // No yielding between duplicate detection and registration: preparation
             // can suspend, but an accepted identity must already be cancellable.
             if (commands.has(id))
@@ -387,21 +405,25 @@ const layer = () =>
                       >()
                       yield* Effect.gen(function* () {
                         // Permission stays leaf-owned and precedes all project effects.
-                        yield* Effect.acquireUseRelease(
-                          Effect.sync(() => new AbortController()),
-                          (controller) =>
-                            hooks.trigger("shell", "create.before", { ...invocation, signal: controller.signal }).pipe(
-                              Effect.tap((result) =>
-                                Effect.sync(() => {
-                                  invocation.command = result.command
-                                  invocation.cwd = result.cwd
-                                  invocation.timeout = result.timeout
-                                  invocation.shell = result.shell
-                                  invocation.env = result.env
-                                }),
-                              ),
-                            ),
-                          (controller) => Effect.sync(() => controller.abort()),
+                        yield* waiting(
+                          Effect.acquireUseRelease(
+                            Effect.sync(() => new AbortController()),
+                            (controller) =>
+                              hooks
+                                .trigger("shell", "create.before", { ...invocation, signal: controller.signal })
+                                .pipe(
+                                  Effect.tap((result) =>
+                                    Effect.sync(() => {
+                                      invocation.command = result.command
+                                      invocation.cwd = result.cwd
+                                      invocation.timeout = result.timeout
+                                      invocation.shell = result.shell
+                                      invocation.env = result.env
+                                    }),
+                                  ),
+                                ),
+                            (controller) => Effect.sync(() => controller.abort()),
+                          ),
                         )
                         if (before) yield* before(invocation)
                         command.info = produce(command.info, (draft) => {
@@ -630,22 +652,24 @@ const layer = () =>
                             })
                           }),
                         )
-                        const retry = yield* !input.queueTimeout
-                          ? entered
-                          : entered.pipe(
-                              Effect.timeoutOrElse({
-                                duration: Duration.millis(
-                                  Math.max(0, input.queueTimeout - (Date.now() - waitingSince)),
-                                ),
-                                orElse: () =>
-                                  Effect.fail(
-                                    new AppProcess.AppProcessError({
-                                      command: invocation.command,
-                                      cause: new Error("Timed out waiting for native admission"),
-                                    }),
+                        const retry = yield* waiting(
+                          !input.queueTimeout
+                            ? entered
+                            : entered.pipe(
+                                Effect.timeoutOrElse({
+                                  duration: Duration.millis(
+                                    Math.max(0, input.queueTimeout - (Date.now() - waitingSince)),
                                   ),
-                              }),
-                            )
+                                  orElse: () =>
+                                    Effect.fail(
+                                      new AppProcess.AppProcessError({
+                                        command: invocation.command,
+                                        cause: new Error("Timed out waiting for native admission"),
+                                      }),
+                                    ),
+                                }),
+                              ),
+                        )
                         if (retry !== undefined) return { retryAfterMs: retry }
                       }
                       command.info = produce(command.info, (draft) => {
@@ -750,7 +774,7 @@ const layer = () =>
         )
       })
 
-      return Service.of({ create, list, get, wait, started, result, timeout, kill, output, remove })
+      return Service.of({ create, list, get, wait, started, stalled, result, timeout, kill, output, remove })
     }),
   )
 
