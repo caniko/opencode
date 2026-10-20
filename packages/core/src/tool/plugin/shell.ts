@@ -260,6 +260,7 @@ export const Plugin = {
                           timeout,
                           shell: selectedShell,
                           background: true,
+                          prepareInBackground: input.background === true,
                           queueTimeout: input.queue_timeout,
                           environment: input.environment,
                           metadata: { sessionID: context.sessionID, toolCallID: context.id },

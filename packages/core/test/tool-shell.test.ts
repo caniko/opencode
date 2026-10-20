@@ -1310,9 +1310,11 @@ describe("ShellTool", () => {
           )
           for (const environment of ["project", "bootstrap"] as const) {
             for (const command of [helloCommand, "# no command body"]) {
-              const settled = yield* executeTool(registry, call({ command, environment }))
-              expect(settled.status).toBe("error")
-              expect(yield* Effect.promise(() => Bun.file(prepared).exists())).toBe(false)
+              for (const background of [false, true]) {
+                const settled = yield* executeTool(registry, call({ command, environment, background }))
+                expect(settled.status).toBe("error")
+                expect(yield* Effect.promise(() => Bun.file(prepared).exists())).toBe(false)
+              }
             }
           }
           const shell = yield* Shell.Service
@@ -1572,6 +1574,91 @@ describe("ShellTool", () => {
       ),
     { timeout: 15_000 },
   )
+
+  it.live("returns an authorized background handle while preparation waits and cancels it without entry", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      reset()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          const jobs = yield* Job.Service
+          const shell = yield* Shell.Service
+          const preparing = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const stopped = yield* Deferred.make<void>()
+          yield* hooks.register("shell", "create.before", () =>
+            Deferred.succeed(preparing, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.ensuring(Deferred.succeed(stopped, undefined)),
+            ),
+          )
+          const result = yield* executeTool(
+            registry,
+            call({ command: helloCommand, timeout: 50, background: true }, "call-queued-preparation"),
+          ).pipe(Effect.timeout("1 second"))
+          yield* Deferred.await(preparing)
+          expect(result.metadata?.status).toBe("queued")
+          expect(assertions).toHaveLength(1)
+          const id = ID.make(String(result.metadata?.shellID))
+          expect((yield* jobs.pendingBackground).find((entry) => entry.id === id)).toMatchObject({ status: "queued" })
+          expect((yield* shell.get(id)).time.started).toBeUndefined()
+          expect(yield* jobs.cancel(id)).toMatchObject({ status: "cancelled" })
+          expect(yield* Deferred.isDone(stopped)).toBe(true)
+          yield* Deferred.succeed(release, undefined)
+          expect((yield* shell.get(id)).status).toBe("killed")
+          expect((yield* shell.get(id)).time.started).toBeUndefined()
+        }),
+      )
+    }),
+  )
+
+  for (const failure of ["preparation", "transformed authorization"]) {
+    it.live(`notifies background ${failure} failure without entering execution`, () =>
+      Effect.gen(function* () {
+        const tmp = yield* tmpdirScoped()
+        reset()
+        yield* withSession(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const hooks = yield* PluginHooks.Service
+            const bus = yield* Bus.Service
+            const shell = yield* Shell.Service
+            const release = yield* Deferred.make<void>()
+            yield* hooks.register("shell", "create.before", (event) =>
+              Deferred.await(release).pipe(
+                Effect.andThen(
+                  failure === "preparation"
+                    ? Effect.die(new Error("preparation refused"))
+                    : Effect.sync(() => {
+                        event.command = cwdCommand
+                        denyAction = "shell"
+                      }),
+                ),
+              ),
+            )
+            const notification = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+              Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+              Stream.runHead,
+              Effect.forkScoped({ startImmediately: true }),
+            )
+            const result = yield* executeTool(registry, call({ command: helloCommand, background: true })).pipe(
+              Effect.timeout("1 second"),
+            )
+            expect(result.metadata?.status).toBe("queued")
+            const id = ID.make(String(result.metadata?.shellID))
+            yield* Deferred.succeed(release, undefined)
+            expect((yield* Fiber.join(notification)).valueOrUndefined?.data.item.payload).toMatchObject({
+              metadata: { shellID: id, state: "error" },
+            })
+            const info = yield* shell.get(id)
+            expect(info.status).toBe("failed")
+            expect(info.time.started).toBeUndefined()
+            expect(assertions).toHaveLength(failure === "preparation" ? 1 : 2)
+          }),
+        ).pipe(Effect.ensuring(Effect.sync(reset)))
+      }),
+    )
+  }
 
   it.live("returns and persists a background handle before resource admission", () =>
     Effect.acquireUseRelease(

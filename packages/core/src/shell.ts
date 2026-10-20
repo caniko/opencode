@@ -41,6 +41,9 @@ type CreateInput = Shell.CreateInput & {
   id?: Shell.ID
   shell?: string
   environment?: "project" | "bootstrap"
+  // Tool-owned background jobs may acknowledge original authorization before
+  // preparation; transformed commands still require the final leaf check.
+  prepareInBackground?: boolean
 }
 
 type Active = {
@@ -352,6 +355,7 @@ const layer = () =>
                   yield* Effect.gen(function* () {
                     // Permission stays leaf-owned and precedes all project effects.
                     if (beforePreparation) yield* beforePreparation(invocation)
+                    if (input.background && input.prepareInBackground) yield* Deferred.succeed(prepared, undefined)
                     yield* Effect.acquireUseRelease(
                       Effect.sync(() => new AbortController()),
                       (controller) =>
@@ -581,6 +585,13 @@ const layer = () =>
               ).pipe(
                 Effect.onExit((exit) =>
                   Effect.gen(function* () {
+                    command.info = produce(Exit.isSuccess(exit) ? exit.value : command.info, (draft) => {
+                      if (Exit.isFailure(exit)) {
+                        draft.status = Cause.hasInterruptsOnly(exit.cause) ? "killed" : "failed"
+                        draft.error = Cause.pretty(exit.cause)
+                      }
+                      draft.time.completed = Date.now()
+                    })
                     if (Exit.isFailure(exit))
                       yield* Deferred.failCause(
                         command.started,
@@ -591,13 +602,6 @@ const layer = () =>
                         ),
                       )
                     if (commands.get(id) !== command) return
-                    command.info = produce(Exit.isSuccess(exit) ? exit.value : command.info, (draft) => {
-                      if (Exit.isFailure(exit)) {
-                        draft.status = Cause.hasInterruptsOnly(exit.cause) ? "killed" : "failed"
-                        draft.error = Cause.pretty(exit.cause)
-                      }
-                      draft.time.completed = Date.now()
-                    })
                     command.stop = undefined
                     command.timeout = undefined
                     if (command.timeoutFiber) yield* Fiber.interrupt(command.timeoutFiber)
@@ -621,8 +625,8 @@ const layer = () =>
             )
             command.stop = Fiber.interrupt(worker).pipe(Effect.asVoid)
 
-            // Callback callers retain synchronous authorization errors. Their Job
-            // already owns early acceptance; raw background API calls return here.
+            // Foreground callbacks retain synchronous preparation errors. Explicit
+            // background jobs acknowledge after original authorization instead.
             if (input.background && !before && !beforePreparation) return command.info
             return yield* restore(Deferred.await(prepared)).pipe(
               Effect.onError(() => removeCommand(id)),
