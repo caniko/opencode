@@ -683,7 +683,9 @@ async function stopManagedService(service: Awaited<ReturnType<typeof startManage
   await fs.rm(service.root, { recursive: true, force: true })
 }
 
-function waitForExit(process: Bun.Subprocess, timeout = 10_000) {
+// Owners poll their registration every 5s, then shut down; hosted Windows runners have
+// needed more than 10s for that (runs 38688407784, 38693647476 and 39428443643).
+function waitForExit(process: Bun.Subprocess, timeout = 20_000) {
   return Promise.race([process.exited.then(() => true), Bun.sleep(timeout).then(() => false)])
 }
 
