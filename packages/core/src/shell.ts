@@ -2,6 +2,7 @@ export * as Shell from "./shell.js"
 export { ID, Info } from "@opencode/schema/shell"
 
 import path from "path"
+import { randomUUID } from "node:crypto"
 import { Cause, Context, Deferred, Duration, Effect, Exit, Fiber, Latch, Layer, Schema, Schedule, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { produce } from "immer"
@@ -52,7 +53,7 @@ type Active = {
   // Resolves with the terminal Info once the command exits, times out, or is killed. A wait
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
-  finished: Deferred.Deferred<Info>
+  finished: Deferred.Deferred<Pick<Info, "status" | "exit" | "signal">>
   started: Deferred.Deferred<Info, AppProcess.AppProcessError>
   finishing?: boolean
   stop?: Effect.Effect<void>
@@ -321,7 +322,7 @@ const layer = () =>
               size: 0,
               newlines: 0,
               done: Deferred.makeUnsafe<Info, NotFoundError>(),
-              finished: Deferred.makeUnsafe<Info>(),
+              finished: Deferred.makeUnsafe<Pick<Info, "status" | "exit" | "signal">>(),
               started: Deferred.makeUnsafe<Info, AppProcess.AppProcessError>(),
             }
             // No yielding between duplicate detection and registration: preparation
@@ -370,6 +371,7 @@ const layer = () =>
                     Effect.onExit((exit) => Deferred.done(prepared, exit)),
                   )
                   const args = ShellSelect.args(invocation.shell, invocation.command)
+                  const waitingSince = Date.now()
                   const lease = yield* Effect.uninterruptibleMask((restore) =>
                     Effect.gen(function* () {
                       const admission = ProcessGovernor.acquire(ProcessGovernor.classifyShell(invocation.command)).pipe(
@@ -401,6 +403,12 @@ const layer = () =>
                     try: () => ProcessGovernor.handoff(lease, invocation.shell, args, false),
                     catch: (cause) => new AppProcess.AppProcessError({ command: invocation.command, cause }),
                   })
+                  // A trusted shell adapter may opt into a private, per-invocation
+                  // start frame. Spawning that adapter is not workload admission.
+                  const startToken = invocation.env.OPENCODE_SHELL_NOTIFY_START === "1" ? randomUUID() : undefined
+                  invocation.env.OPENCODE_SHELL_START_TOKEN = startToken
+                  const marker = startToken ? Buffer.from(`\x1e${startToken}\x1f`) : undefined
+                  const nativeStarted = Deferred.makeUnsafe<void>()
                   const handle = yield* environment.spawner
                     .spawn(
                       ChildProcess.make(guarded.command, guarded.args, {
@@ -416,28 +424,49 @@ const layer = () =>
                         (cause) => new AppProcess.AppProcessError({ command: invocation.command, cause }),
                       ),
                     )
-                  command.info = produce(command.info, (draft) => {
-                    draft.status = "running"
-                    draft.pid = handle.pid
-                    draft.time.started = Date.now()
-                  })
-
                   const stream = createWriteStream(file)
                   const outputDone = Latch.makeUnsafe()
-                  const pump = handle.all.pipe(
-                    Stream.runForEach((chunk: Uint8Array) =>
-                      Effect.sync(() => {
-                        stream.write(chunk)
-                        command.size += chunk.length
-                        // Count while streaming so truncation notices never rescan the output file.
-                        for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
-                          command.newlines++
-                      }),
-                    ),
-                  )
+                  let pending = Buffer.alloc(0)
+                  let notified = !marker
+                  const write = (chunk: Uint8Array) =>
+                    Effect.sync(() => {
+                      stream.write(chunk)
+                      command.size += chunk.length
+                      // Count while streaming so truncation notices never rescan the output file.
+                      for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
+                        command.newlines++
+                    })
+                  // Parse only stderr: unrelated stdout can interleave with a
+                  // split control frame without corrupting the notification.
+                  const capture = marker
+                    ? Stream.merge(
+                        handle.stdout,
+                        handle.stderr.pipe(
+                          Stream.mapEffect((chunk) =>
+                            Effect.gen(function* () {
+                              if (notified) return chunk
+                              const data = Buffer.concat([pending, chunk])
+                              const index = data.indexOf(marker)
+                              if (index !== -1) {
+                                pending = Buffer.alloc(0)
+                                notified = true
+                                yield* Deferred.succeed(nativeStarted, undefined)
+                                return Buffer.concat([data.subarray(0, index), data.subarray(index + marker.length)])
+                              }
+                              // Retain only a possible split frame, never the whole output.
+                              const held = Math.min(data.length, marker.length - 1)
+                              pending = data.subarray(data.length - held)
+                              return data.subarray(0, data.length - held)
+                            }),
+                          ),
+                        ),
+                      )
+                    : handle.all
+                  const pump = capture.pipe(Stream.runForEach(write))
                   runFork(
                     Effect.gen(function* () {
                       yield* pump.pipe(Effect.catch(() => Effect.void))
+                      yield* write(pending)
                       yield* Effect.promise(
                         () =>
                           new Promise<void>((resolve) => {
@@ -459,16 +488,11 @@ const layer = () =>
                     Effect.gen(function* () {
                       if (command.finishing) return
                       command.finishing = true
-                      const terminal = produce(command.info, (draft) => {
-                        draft.status = status
-                        if (exit !== undefined) draft.exit = exit
-                        if (signal !== undefined) draft.signal = signal
-                      })
                       yield* beforeWait
                       yield* outputDone.await
                       // This only closes the worker's native scope. Publish the
                       // terminal outcome outside that scope, after cleanup completes.
-                      yield* Deferred.succeed(command.finished, terminal)
+                      yield* Deferred.succeed(command.finished, { status, exit, signal })
                     })
 
                   command.timeout = (duration) =>
@@ -491,8 +515,6 @@ const layer = () =>
                       )
                     })
 
-                  yield* command.timeout(command.duration ?? invocation.timeout)
-
                   runFork(
                     handle.exitCode.pipe(
                       Effect.flatMap((code) => finish("exited", code)),
@@ -507,11 +529,46 @@ const layer = () =>
                     ),
                   )
 
+                  if (marker) {
+                    const entered = Effect.raceFirst(
+                      Deferred.await(nativeStarted),
+                      Deferred.await(command.finished).pipe(
+                        Effect.andThen(
+                          Effect.fail(
+                            new AppProcess.AppProcessError({
+                              command: invocation.command,
+                              cause: new Error("Shell adapter exited before native admission"),
+                            }),
+                          ),
+                        ),
+                      ),
+                    )
+                    yield* !input.queueTimeout
+                      ? entered
+                      : entered.pipe(
+                          Effect.timeoutOrElse({
+                            duration: Duration.millis(Math.max(0, input.queueTimeout - (Date.now() - waitingSince))),
+                            orElse: () =>
+                              Effect.fail(
+                                new AppProcess.AppProcessError({
+                                  command: invocation.command,
+                                  cause: new Error("Timed out waiting for native admission"),
+                                }),
+                              ),
+                          }),
+                        )
+                  }
+                  command.info = produce(command.info, (draft) => {
+                    draft.status = "running"
+                    draft.pid = handle.pid
+                    draft.time.started = Date.now()
+                  })
+                  yield* command.timeout(command.duration ?? invocation.timeout)
                   yield* bus.publish(Shell.Event.Started, { info: command.info })
                   yield* Deferred.succeed(command.started, command.info)
                   // Hold the handle's scope open until the command terminates; closing it earlier would
                   // release (kill) the process before its exit is observed.
-                  return yield* Deferred.await(command.finished)
+                  return { ...command.info, ...(yield* Deferred.await(command.finished)) }
                 }),
               ).pipe(
                 Effect.onExit((exit) =>

@@ -237,3 +237,75 @@ test("background shells are registered and cancellable during preparation", asyn
     ),
   )
 }, 10000)
+
+test("native admission readiness, not shim spawn, starts the shell execution clock", async () => {
+  if (process.platform === "win32") return
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const shell = yield* Shell.Service
+        const hooks = yield* PluginHooks.Service
+        yield* hooks.register("shell", "create.before", (event) =>
+          Effect.sync(() => {
+            event.env.OPENCODE_SHELL_NOTIFY_START = "1"
+          }),
+        )
+        const marker = `printf '\\036' >&2; sleep .02; printf between; sleep .02; printf '%s' "$OPENCODE_SHELL_START_TOKEN" >&2; sleep .02; printf '\\037' >&2`
+        const queued = yield* shell.create({
+          shell: "sh",
+          command: `printf before; sleep .8; ${marker}; printf after`,
+          timeout: 200,
+          background: true,
+        })
+        yield* Effect.sleep("300 millis")
+        expect(yield* shell.get(queued.id)).toMatchObject({ status: "queued" })
+        expect((yield* shell.get(queued.id)).time.started).toBeUndefined()
+        expect(yield* shell.result(queued)).toMatchObject({
+          info: { status: "exited", exit: 0 },
+          capture: { output: "beforebetweenafter" },
+        })
+        expect((yield* shell.started(queued.id)).time.started! - queued.time.queued!).toBeGreaterThanOrEqual(750)
+
+        const slow = yield* shell.create({ shell: "sh", command: `${marker}; sleep 2`, timeout: 100, background: true })
+        expect((yield* shell.result(slow)).info.status).toBe("timeout")
+
+        const rejected = yield* shell.create({ shell: "sh", command: "printf rejected; exit 17", background: true })
+        const error = yield* shell.started(rejected.id).pipe(Effect.flip)
+        expect(error.message).toContain("before native admission")
+        expect(yield* shell.result(rejected)).toMatchObject({
+          info: { status: "failed" },
+          capture: { output: "rejected" },
+        })
+
+        const expired = yield* shell.create({
+          shell: "sh",
+          command: `sleep .8; ${marker}; printf must-not-run`,
+          queueTimeout: 100,
+          background: true,
+        })
+        const expiredError = yield* shell.started(expired.id).pipe(Effect.flip)
+        expect(expiredError.message).toContain("waiting for native admission")
+        expect(yield* shell.result(expired)).toMatchObject({
+          info: { status: "failed" },
+          capture: { output: "(no output)" },
+        })
+
+        const cancelled = yield* shell.create({ shell: "sh", command: `sleep 2; ${marker}`, background: true })
+        yield* Effect.sleep("100 millis")
+        expect((yield* shell.get(cancelled.id)).status).toBe("queued")
+        yield* shell.remove(cancelled.id)
+        expect(yield* shell.list()).toEqual([])
+        expect((yield* ProcessGovernor.status()).ordinary.running).toBe(0)
+      }).pipe(
+        Effect.provide(
+          AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [
+            Location.node.replace(tempLocationLayer),
+            Global.node.replace(tempGlobalLayer),
+            Config.node.replace(Config.testLayer()),
+            Environment.node.replace(hostEnvironmentLayer),
+          ]),
+        ),
+      ),
+    ),
+  )
+}, 10000)
