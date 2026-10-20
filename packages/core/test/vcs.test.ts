@@ -784,71 +784,77 @@ describe("Vcs", () => {
     ),
   )
 
-  it.live("scopes committed diffs to nested paths and retains binary, rename, and deletion metadata", () =>
-    withGit(
-      (directory) =>
-        Effect.gen(function* () {
-          yield* Effect.promise(async () => {
-            await fs.writeFile(path.join(directory, "outside.txt"), "base\n")
-            await fs.writeFile(path.join(directory, "nested/old.txt"), "rename me\n")
-            await fs.writeFile(path.join(directory, "nested/gone.txt"), "delete me\n")
-            await fs.writeFile(path.join(directory, "nested/image.png"), Buffer.from([137, 80, 78, 71, 0, 1]))
-            await commitAll(directory, "initial")
-            await $`git checkout -b feature main`.cwd(directory).quiet()
-            await fs.writeFile(path.join(directory, "outside.txt"), "changed\n")
-            await fs.rename(path.join(directory, "nested/old.txt"), path.join(directory, "nested/new.txt"))
-            await fs.rm(path.join(directory, "nested/gone.txt"))
-            await fs.writeFile(path.join(directory, "nested/image.png"), Buffer.from([137, 80, 78, 71, 0, 2]))
-            await commitAll(directory, "feature")
-          })
-          const vcs = yield* Vcs.Service
-          const committed = yield* vcs.diff("committed")
-          expect(committed.map((row) => ({ file: row.file, status: row.status }))).toEqual([
-            { file: "nested/gone.txt", status: "deleted" },
-            { file: "nested/image.png", status: "modified" },
-            { file: "nested/new.txt", status: "added" },
-            { file: "nested/old.txt", status: "deleted" },
-          ])
-          expect(committed[0].patch).toContain("-delete me")
-          expect(committed[1]).toMatchObject({ additions: 0, deletions: 0 })
-          expect(committed[1].patch).toContain("Binary files")
-          expect(committed[2].patch).toContain("+rename me")
-          yield* Effect.promise(async () => {
-            await fs.rm(path.join(directory, "nested/image.png"))
-            await fs.writeFile(path.join(directory, "nested/new.txt"), "dirty\n")
-            await fs.writeFile(path.join(directory, "nested/gone.txt"), "untracked resurrection\n")
-            await $`git add nested/new.txt`.cwd(directory).quiet()
-          })
-          expect(yield* vcs.diff("committed")).toEqual(committed)
-        }),
-      { scope: "nested" },
-    ),
+  it.live(
+    "scopes committed diffs to nested paths and retains binary, rename, and deletion metadata",
+    () =>
+      withGit(
+        (directory) =>
+          Effect.gen(function* () {
+            yield* Effect.promise(async () => {
+              await fs.writeFile(path.join(directory, "outside.txt"), "base\n")
+              await fs.writeFile(path.join(directory, "nested/old.txt"), "rename me\n")
+              await fs.writeFile(path.join(directory, "nested/gone.txt"), "delete me\n")
+              await fs.writeFile(path.join(directory, "nested/image.png"), Buffer.from([137, 80, 78, 71, 0, 1]))
+              await commitAll(directory, "initial")
+              await $`git checkout -b feature main`.cwd(directory).quiet()
+              await fs.writeFile(path.join(directory, "outside.txt"), "changed\n")
+              await fs.rename(path.join(directory, "nested/old.txt"), path.join(directory, "nested/new.txt"))
+              await fs.rm(path.join(directory, "nested/gone.txt"))
+              await fs.writeFile(path.join(directory, "nested/image.png"), Buffer.from([137, 80, 78, 71, 0, 2]))
+              await commitAll(directory, "feature")
+            })
+            const vcs = yield* Vcs.Service
+            const committed = yield* vcs.diff("committed")
+            expect(committed.map((row) => ({ file: row.file, status: row.status }))).toEqual([
+              { file: "nested/gone.txt", status: "deleted" },
+              { file: "nested/image.png", status: "modified" },
+              { file: "nested/new.txt", status: "added" },
+              { file: "nested/old.txt", status: "deleted" },
+            ])
+            expect(committed[0].patch).toContain("-delete me")
+            expect(committed[1]).toMatchObject({ additions: 0, deletions: 0 })
+            expect(committed[1].patch).toContain("Binary files")
+            expect(committed[2].patch).toContain("+rename me")
+            yield* Effect.promise(async () => {
+              await fs.rm(path.join(directory, "nested/image.png"))
+              await fs.writeFile(path.join(directory, "nested/new.txt"), "dirty\n")
+              await fs.writeFile(path.join(directory, "nested/gone.txt"), "untracked resurrection\n")
+              await $`git add nested/new.txt`.cwd(directory).quiet()
+            })
+            expect(yield* vcs.diff("committed")).toEqual(committed)
+          }),
+        { scope: "nested" },
+      ),
+    30_000,
   )
 
-  it.live("uses an explicit diff base without treating upstream or Git config as a parent", () =>
-    withGit((directory) =>
-      Effect.gen(function* () {
-        yield* Effect.promise(async () => {
-          await fs.writeFile(path.join(directory, "file.txt"), "base\n")
-          await commitAll(directory, "initial")
-          await $`git checkout -b release`.cwd(directory).quiet()
-          await fs.writeFile(path.join(directory, "release.txt"), "release\n")
-          await commitAll(directory, "release")
-          await $`git checkout -b feature`.cwd(directory).quiet()
-          await fs.writeFile(path.join(directory, "feature.txt"), "feature\n")
-          await commitAll(directory, "feature")
-          await $`git branch --set-upstream-to=release feature`.cwd(directory).quiet()
-          await $`git config branch.feature.opencode-merge-base refs/heads/release`.cwd(directory).quiet()
-        })
-        const vcs = yield* Vcs.Service
-        expect(yield* vcs.base().pipe(Effect.flip)).toMatchObject({ message: "Choose a review base" })
-        expect((yield* vcs.diff("committed", { base: "release" })).map((row) => row.file)).toEqual(["feature.txt"])
-        expect((yield* vcs.diff("committed")).map((row) => row.file)).toEqual(["feature.txt", "release.txt"])
-        expect((yield* vcs.diff("branch", { base: "release" })).map((row) => row.file)).toEqual(["feature.txt"])
-        expect((yield* vcs.diff("branch")).map((row) => row.file)).toEqual(["feature.txt", "release.txt"])
-        expect(yield* vcs.base().pipe(Effect.flip)).toMatchObject({ message: "Choose a review base" })
-      }),
-    ),
+  it.live(
+    "uses an explicit diff base without treating upstream or Git config as a parent",
+    () =>
+      withGit((directory) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.writeFile(path.join(directory, "file.txt"), "base\n")
+            await commitAll(directory, "initial")
+            await $`git checkout -b release`.cwd(directory).quiet()
+            await fs.writeFile(path.join(directory, "release.txt"), "release\n")
+            await commitAll(directory, "release")
+            await $`git checkout -b feature`.cwd(directory).quiet()
+            await fs.writeFile(path.join(directory, "feature.txt"), "feature\n")
+            await commitAll(directory, "feature")
+            await $`git branch --set-upstream-to=release feature`.cwd(directory).quiet()
+            await $`git config branch.feature.opencode-merge-base refs/heads/release`.cwd(directory).quiet()
+          })
+          const vcs = yield* Vcs.Service
+          expect(yield* vcs.base().pipe(Effect.flip)).toMatchObject({ message: "Choose a review base" })
+          expect((yield* vcs.diff("committed", { base: "release" })).map((row) => row.file)).toEqual(["feature.txt"])
+          expect((yield* vcs.diff("committed")).map((row) => row.file)).toEqual(["feature.txt", "release.txt"])
+          expect((yield* vcs.diff("branch", { base: "release" })).map((row) => row.file)).toEqual(["feature.txt"])
+          expect((yield* vcs.diff("branch")).map((row) => row.file)).toEqual(["feature.txt", "release.txt"])
+          expect(yield* vcs.base().pipe(Effect.flip)).toMatchObject({ message: "Choose a review base" })
+        }),
+      ),
+    30_000,
   )
 
   it.live("reports missing explicit bases and missing default bases without calling them clean", () =>

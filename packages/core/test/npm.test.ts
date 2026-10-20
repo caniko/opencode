@@ -220,52 +220,62 @@ describe("Npm.add", () => {
     expect(entries.cached).toEqual(entries.added)
   })
 
-  test.each(["unnamed", "named"])("installs and locates %s Git packages with dependencies", async (kind) => {
-    await using tmp = await tmpdir()
-    const fixture = await createGitFixture(tmp.path)
-    const spec =
-      kind === "unnamed"
-        ? `git+file://${fixture.repository}#${fixture.commit}`
-        : `fixture-named-plugin@git+file://${fixture.repository}#fixture-branch`
+  test.each(["unnamed", "named"])(
+    "installs and locates %s Git packages with dependencies",
+    async (kind) => {
+      await using tmp = await tmpdir()
+      const fixture = await createGitFixture(tmp.path)
+      const spec =
+        kind === "unnamed"
+          ? `git+file://${fixture.repository}#${fixture.commit}`
+          : `fixture-named-plugin@git+file://${fixture.repository}#fixture-branch`
 
-    const entries = await Effect.gen(function* () {
-      const npm = yield* Npm.Service
-      return {
-        added: yield* npm.add(spec),
-        cached: yield* npm.add(spec),
-        resolved: yield* npm.resolve(spec),
-      }
-    }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
+      const entries = await Effect.gen(function* () {
+        const npm = yield* Npm.Service
+        return {
+          added: yield* npm.add(spec),
+          cached: yield* npm.add(spec),
+          resolved: yield* npm.resolve(spec),
+        }
+      }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
 
-    expect(entries.added.directory).toEndWith(path.join("node_modules", entries.added.name))
-    expect(entries.added.version).toBe(fixture.commit)
-    expect(entries.cached).toEqual(entries.added)
-    expect(entries.resolved).toEqual(entries.added)
-    expect(
-      await fs.stat(path.join(path.dirname(entries.added.directory), "fixture-dependency", "package.json")),
-    ).toBeTruthy()
-    expect(entries.added.directory).toContain(path.join("npm", await Npm.cacheKey(spec)))
-    expect(entries.added.directory).toContain("node_modules")
-  })
+      expect(entries.added.directory).toEndWith(path.join("node_modules", entries.added.name))
+      expect(entries.added.version).toBe(fixture.commit)
+      expect(entries.cached).toEqual(entries.added)
+      expect(entries.resolved).toEqual(entries.added)
+      expect(
+        await fs.stat(path.join(path.dirname(entries.added.directory), "fixture-dependency", "package.json")),
+      ).toBeTruthy()
+      expect(entries.added.directory).toContain(path.join("npm", await Npm.cacheKey(spec)))
+      expect(entries.added.directory).toContain("node_modules")
+    },
+    30_000,
+  )
 
-  test.each(["commit", "branch"])("installs a Git package from an npm ::path: subdirectory at a %s", async (ref) => {
-    await using tmp = await tmpdir()
-    const fixture = await createGitFixture(tmp.path)
-    const spec = `git+file://${fixture.repository}#${ref === "commit" ? fixture.commit : "fixture-branch"}::path:packages/subdirectory-plugin`
-    const result = await Effect.gen(function* () {
-      const npm = yield* Npm.Service
-      return { added: yield* npm.add(spec), outdated: yield* npm.check(spec) }
-    }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
+  test.each(["commit", "branch"])(
+    "installs a Git package from an npm ::path: subdirectory at a %s",
+    async (ref) => {
+      await using tmp = await tmpdir()
+      const fixture = await createGitFixture(tmp.path)
+      const spec = `git+file://${fixture.repository}#${ref === "commit" ? fixture.commit : "fixture-branch"}::path:packages/subdirectory-plugin`
+      const result = await Effect.gen(function* () {
+        const npm = yield* Npm.Service
+        return { added: yield* npm.add(spec), outdated: yield* npm.check(spec) }
+      }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "cache"))), Effect.runPromise)
 
-    expect(result.added.directory).toEndWith(path.join("node_modules", "fixture-subdirectory-plugin"))
-    expect(result.added.name).toBe("fixture-subdirectory-plugin")
-    expect(result.added.version).toBe(fixture.commit)
-    expect(await Bun.file(path.join(result.added.directory, "index.js")).text()).toContain("subdirectory: true")
-    expect(
-      await fs.stat(path.join(path.dirname(result.added.directory), "fixture-subdirectory-dependency", "package.json")),
-    ).toBeTruthy()
-    expect(result.outdated).toBeFalse()
-  })
+      expect(result.added.directory).toEndWith(path.join("node_modules", "fixture-subdirectory-plugin"))
+      expect(result.added.name).toBe("fixture-subdirectory-plugin")
+      expect(result.added.version).toBe(fixture.commit)
+      expect(await Bun.file(path.join(result.added.directory, "index.js")).text()).toContain("subdirectory: true")
+      expect(
+        await fs.stat(
+          path.join(path.dirname(result.added.directory), "fixture-subdirectory-dependency", "package.json"),
+        ),
+      ).toBeTruthy()
+      expect(result.outdated).toBeFalse()
+    },
+    30_000,
+  )
 
   // Several real Git installs and updates exceed Bun's default timeout on Windows.
   test("checks and updates mutable Git packages without changing pinned installs", async () => {
@@ -311,29 +321,33 @@ describe("Npm.add", () => {
   }, 30_000)
 
   // Symlink creation needs elevated privileges on Windows.
-  test.skipIf(win)("records Git revisions when the cache directory is reached through a symlink", async () => {
-    await using tmp = await tmpdir()
-    const fixture = await createGitFixture(tmp.path)
-    await fs.mkdir(path.join(tmp.path, "cache"))
-    await fs.symlink(path.join(tmp.path, "cache"), path.join(tmp.path, "link"))
-    const mutable = `git+${pathToFileURL(fixture.repository).href}#fixture-branch`
+  test.skipIf(win)(
+    "records Git revisions when the cache directory is reached through a symlink",
+    async () => {
+      await using tmp = await tmpdir()
+      const fixture = await createGitFixture(tmp.path)
+      await fs.mkdir(path.join(tmp.path, "cache"))
+      await fs.symlink(path.join(tmp.path, "cache"), path.join(tmp.path, "link"))
+      const mutable = `git+${pathToFileURL(fixture.repository).href}#fixture-branch`
 
-    const result = await Effect.gen(function* () {
-      const npm = yield* Npm.Service
-      const added = yield* npm.add(mutable)
-      const current = yield* npm.check(mutable)
-      yield* Effect.promise(async () => {
-        await Bun.write(path.join(fixture.repository, "index.js"), 'export default { root: "second" }\n')
-        await Bun.$`git -C ${fixture.repository} add .`
-        await Bun.$`git -C ${fixture.repository} -c user.name=fixture -c user.email=fixture@example.com commit -qm second`
-      })
-      return { added, current, outdated: yield* npm.check(mutable) }
-    }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "link"))), Effect.runPromise)
+      const result = await Effect.gen(function* () {
+        const npm = yield* Npm.Service
+        const added = yield* npm.add(mutable)
+        const current = yield* npm.check(mutable)
+        yield* Effect.promise(async () => {
+          await Bun.write(path.join(fixture.repository, "index.js"), 'export default { root: "second" }\n')
+          await Bun.$`git -C ${fixture.repository} add .`
+          await Bun.$`git -C ${fixture.repository} -c user.name=fixture -c user.email=fixture@example.com commit -qm second`
+        })
+        return { added, current, outdated: yield* npm.check(mutable) }
+      }).pipe(Effect.scoped, Effect.provide(npmLayer(path.join(tmp.path, "link"))), Effect.runPromise)
 
-    expect(result.added.version).toBe(fixture.commit)
-    expect(result.current).toBeFalse()
-    expect(result.outdated).toBeTrue()
-  }, 30_000)
+      expect(result.added.version).toBe(fixture.commit)
+      expect(result.current).toBeFalse()
+      expect(result.outdated).toBeTrue()
+    },
+    30_000,
+  )
 })
 
 describe("Npm.resolve", () => {

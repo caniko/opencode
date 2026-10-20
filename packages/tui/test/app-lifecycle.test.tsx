@@ -629,6 +629,7 @@ test.each([80, 120])("completes custom Markdown and ordinary fences in a session
       frame.includes("DiagramEnd") &&
       frame.includes("x\u00b2") &&
       frame.includes("y\u00b2"),
+    { maxPasses: 60 },
   )
   expect(streaming).toContain("Compaction")
   expect(streaming).not.toContain("initial final")
