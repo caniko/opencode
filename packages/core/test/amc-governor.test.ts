@@ -5,10 +5,12 @@ import os from "node:os"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { ChildProcessSpawner } from "effect/unstable/process"
 import { ProcessGovernor } from "@opencode/util/process-governor"
+import { LayerNode } from "@opencode/util/effect/layer-node"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Config } from "@opencode/core/config"
 import { Environment } from "@opencode/core/environment/index"
 import { Location } from "@opencode/core/location"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Shell } from "@opencode/core/shell"
 import { Global } from "@opencode/util/global"
 import { hostEnvironmentLayer } from "./fixture/environment"
@@ -188,6 +190,50 @@ test("shell completion waits for native process scope cleanup", async () => {
           ),
         )
       }),
+    ),
+  )
+}, 10000)
+
+test("background shells are registered and cancellable during preparation", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const shell = yield* Shell.Service
+        const hooks = yield* PluginHooks.Service
+        const preparing = yield* Deferred.make<void>()
+        const aborted = yield* Deferred.make<void>()
+        const signals: AbortSignal[] = []
+        yield* hooks.register("shell", "create.before", (event) =>
+          Deferred.succeed(preparing, undefined).pipe(
+            Effect.tap(() => Effect.sync(() => signals.push(event.signal!))),
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(aborted, undefined)),
+          ),
+        )
+        const accepted = yield* shell
+          .create({ shell: "sh", command: "printf must-not-run", background: true })
+          .pipe(Effect.timeout("1 second"))
+        yield* Deferred.await(preparing)
+        expect(yield* shell.get(accepted.id)).toMatchObject({ status: "queued", command: "printf must-not-run" })
+        const duplicate = yield* shell
+          .create({ id: accepted.id, shell: "sh", command: "printf duplicate", background: true })
+          .pipe(Effect.flip)
+        expect(duplicate.message).toContain("Shell ID already accepted")
+        yield* shell.remove(accepted.id)
+        yield* Deferred.await(aborted)
+        expect(signals[0]?.aborted).toBe(true)
+        expect(yield* shell.list()).toEqual([])
+        expect((yield* ProcessGovernor.status()).ordinary.running).toBe(0)
+      }).pipe(
+        Effect.provide(
+          AppNodeBuilder.build(LayerNode.group([Shell.node, PluginHooks.node]), [
+            Location.node.replace(tempLocationLayer),
+            Global.node.replace(tempGlobalLayer),
+            Config.node.replace(Config.testLayer()),
+            Environment.node.replace(hostEnvironmentLayer),
+          ]),
+        ),
+      ),
     ),
   )
 }, 10000)
