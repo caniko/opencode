@@ -138,6 +138,7 @@ const shellPluginSupervisor = makeLocationNode({
     Permission.node,
     Session.node,
     Job.node,
+    Location.node,
     Shell.node,
     ShellSelect.node,
     Tool.node,
@@ -1596,7 +1597,25 @@ describe("ShellTool", () => {
             expect(result.metadata?.status).toBe("queued")
             const id = ID.make(String(result.metadata?.shellID))
             expect(yield* jobs.get(id)).toMatchObject({ status: "queued" })
-            expect((yield* jobs.pendingBackground).find((entry) => entry.id === id)).toMatchObject({ status: "queued" })
+            expect((yield* jobs.pendingBackground).find((entry) => entry.id === id)).toMatchObject({
+              status: "queued",
+              recovery: {
+                kind: "shell",
+                sessionID,
+                shellID: id,
+                command: "amc admission exec --contract tool -- true",
+                request: {
+                  cwd: tmp.path,
+                  shell: (yield* shell.get(id)).shell,
+                  timeout: 50,
+                  background: true,
+                  environment: "project",
+                  messageID: toolIdentity.messageID,
+                  toolCallID: "call-queued-admission",
+                },
+              },
+              time: { submitted: expect.any(Number) },
+            })
             yield* Effect.sleep("100 millis")
             expect((yield* shell.get(id)).status).toBe("queued")
             yield* jobs.cancel(id)

@@ -214,9 +214,10 @@ export const layer = (options?: Options) =>
                 : recoverSubagent(background, recovery, suspended).pipe(
                     // Keep the durable marker, rather than dropping an accepted
                     // recovery or preventing independent Sessions from starting.
-                    Effect.catchTag("Job.CapacityError", () =>
-                      Effect.logWarning("Background recovery deferred: job capacity exhausted", {
+                    Effect.catch((error) =>
+                      Effect.logWarning("Background recovery deferred: job submission refused", {
                         jobID: background.id,
+                        error: error.message,
                       }),
                     ),
                   )

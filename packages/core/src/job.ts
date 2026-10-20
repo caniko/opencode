@@ -1,6 +1,7 @@
 export * as Job from "./job.js"
 
 import { Array, Cause, Clock, Context, Deferred, Effect, Exit, Layer, Schema, Scope, SynchronizedRef } from "effect"
+import { isDeepStrictEqual } from "node:util"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Identifier } from "./id/id.js"
 import { KV } from "./kv.js"
@@ -16,6 +17,20 @@ const Background = Schema.Struct({
       sessionID: SessionSchema.ID,
       shellID: Schema.String,
       command: Schema.String,
+      // Preserve the request, not a prepared environment or entry capability.
+      // Legacy notification-only markers remain readable and are never replayed.
+      request: Schema.optionalKey(
+        Schema.Struct({
+          cwd: Schema.String,
+          shell: Schema.String,
+          timeout: Schema.Number,
+          queueTimeout: Schema.optionalKey(Schema.Number),
+          background: Schema.Boolean,
+          environment: Schema.Literals(["project", "bootstrap"]),
+          messageID: SessionMessage.ID,
+          toolCallID: Schema.String,
+        }),
+      ),
     }),
     Schema.Struct({
       kind: Schema.Literal("subagent"),
@@ -28,6 +43,13 @@ const Background = Schema.Struct({
   status: Schema.Literals(["queued", "running", "cancelling", "completed", "error", "cancelled"]),
   output: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
+  time: Schema.optionalKey(
+    Schema.Struct({
+      submitted: Schema.Number,
+      executed: Schema.optionalKey(Schema.Number),
+      completed: Schema.optionalKey(Schema.Number),
+    }),
+  ),
 })
 
 export type Background = typeof Background.Type
@@ -42,6 +64,23 @@ const decodeBackground = Schema.decodeUnknownResult(Background)
 const backgroundPrefix = "job.background/"
 const COMPLETED_LIMIT = 25
 export const ACTIVE_LIMIT = 128
+export const REQUEST_LIMIT = 65_536
+
+export class ConflictError extends Schema.TaggedError<ConflictError>()("Job.ConflictError", {
+  id: Schema.String,
+}) {
+  override get message() {
+    return `Job ${this.id} was already accepted with a different request; no work was dispatched.`
+  }
+}
+
+export class PayloadError extends Schema.TaggedError<PayloadError>()("Job.PayloadError", {
+  limit: Schema.Number,
+}) {
+  override get message() {
+    return `Job request exceeds ${this.limit} bytes; no work was accepted.`
+  }
+}
 
 export class CapacityError extends Schema.TaggedError<CapacityError>()("Job.CapacityError", {
   retryAfterMs: Schema.Number,
@@ -73,6 +112,7 @@ type Active = {
   blockingSessions: Map<SessionSchema.ID, number>
   isBackgrounded: boolean
   consumed: boolean
+  queuedSubmission: boolean
   recovery?: Recovery
 }
 
@@ -143,7 +183,7 @@ export type BackgroundAllInput = {
 
 export interface Interface {
   readonly get: (id: string) => Effect.Effect<Info | undefined>
-  readonly start: (input: StartInput) => Effect.Effect<Info, CapacityError>
+  readonly start: (input: StartInput) => Effect.Effect<Info, CapacityError | ConflictError | PayloadError>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
@@ -219,6 +259,11 @@ export const make = Effect.gen(function* () {
       notificationID: job.info.notificationID,
       recovery: job.recovery,
       status: job.info.status,
+      time: {
+        submitted: job.info.started_at,
+        ...(job.info.executed_at !== undefined ? { executed: job.info.executed_at } : {}),
+        ...(job.info.completed_at !== undefined ? { completed: job.info.completed_at } : {}),
+      },
       ...(job.info.output !== undefined ? { output: job.info.output } : {}),
       ...(job.info.error !== undefined ? { error: job.info.error } : {}),
     })
@@ -294,12 +339,21 @@ export const make = Effect.gen(function* () {
           state.jobs,
           Effect.fnUntraced(function* (jobs): Effect.fn.Return<
             readonly [StartResult, Map<string, Active>],
-            CapacityError
+            CapacityError | ConflictError | PayloadError
           > {
             const existing = jobs.get(id)
+            if (existing && (input.queued || existing.queuedSubmission)) {
+              if (existing.info.type !== input.type || !isDeepStrictEqual(existing.recovery, input.recovery))
+                return yield* new ConflictError({ id })
+              // A terminal result awaiting acknowledgment is still the accepted
+              // request, not permission to dispatch its side effects again.
+              return [{ info: snapshot(existing) }, jobs]
+            }
             if (existing && isActive(existing.info.status)) {
               return [{ info: snapshot(existing) }, jobs]
             }
+            if (input.queued && input.recovery && Buffer.byteLength(JSON.stringify(input.recovery)) > REQUEST_LIMIT)
+              return yield* new PayloadError({ limit: REQUEST_LIMIT })
             if (
               input.queued &&
               [...jobs.values()].filter((job) => !job.consumed || job.info.notificationID).length >= ACTIVE_LIMIT
@@ -324,6 +378,7 @@ export const make = Effect.gen(function* () {
               blockingSessions: new Map<SessionSchema.ID, number>(),
               isBackgrounded: false,
               consumed: false,
+              queuedSubmission: input.queued === true,
               recovery: input.recovery,
             }
             // Persist the accepted intent before the first producer effect,

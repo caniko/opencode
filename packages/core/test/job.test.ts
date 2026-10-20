@@ -6,6 +6,7 @@ import { Integration } from "@opencode/core/integration"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect"
 import { SessionSchema } from "@opencode/core/session/schema"
+import { SessionMessage } from "@opencode/core/session/message"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Job.node, KV.node])))
@@ -220,6 +221,100 @@ describe("Job", () => {
         status: "completed",
         output: "original output",
       })
+    }),
+  )
+
+  it.live("deduplicates accepted queued requests through completion and rejects conflicting payloads", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const release = yield* Deferred.make<void>()
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_queued_identity"),
+        shellID: "sh_queued_identity",
+        command: "printf original",
+        request: {
+          cwd: "/workspace",
+          shell: "/bin/sh",
+          timeout: 50,
+          queueTimeout: 1_000,
+          background: true,
+          environment: "project" as const,
+          messageID: SessionMessage.ID.make("msg_queued_identity"),
+          toolCallID: "call_queued_identity",
+        },
+      }
+      const job = yield* jobs.start({
+        id: "job_queued_identity",
+        type: "shell",
+        queued: true,
+        recovery,
+        run: Deferred.await(release).pipe(Effect.as("original")),
+      })
+      const retry = () =>
+        jobs.start({
+          id: job.id,
+          type: "shell",
+          queued: true,
+          recovery: { ...recovery },
+          run: Effect.die("Accepted work must not be dispatched again"),
+        })
+      expect(yield* retry()).toEqual(job)
+      for (const changed of [
+        { ...recovery, command: "printf changed" },
+        { ...recovery, request: { ...recovery.request, timeout: 100 } },
+      ]) {
+        expect(
+          yield* jobs
+            .start({
+              id: job.id,
+              type: "shell",
+              queued: true,
+              recovery: changed,
+              run: Effect.die("Conflicting work must not execute"),
+            })
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "Job.ConflictError", id: job.id })
+      }
+      yield* Deferred.succeed(release, undefined)
+      const completed = (yield* jobs.wait({ id: job.id })).info!
+      expect(completed).toMatchObject({ status: "completed", output: "original" })
+      expect(yield* retry()).toEqual(completed)
+      expect(
+        yield* jobs
+          .start({
+            id: job.id,
+            type: "different",
+            queued: true,
+            recovery,
+            run: Effect.die("Conflicting completed work must not execute"),
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "Job.ConflictError", id: job.id })
+    }),
+  )
+
+  it.live("rejects oversized durable requests without accepting work", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      expect(
+        yield* jobs
+          .start({
+            id: "job_oversized",
+            type: "shell",
+            queued: true,
+            recovery: {
+              kind: "shell",
+              sessionID: SessionSchema.ID.make("ses_oversized"),
+              shellID: "sh_oversized",
+              command: "x".repeat(65_537),
+            },
+            run: Effect.die("Oversized work must not execute"),
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "Job.PayloadError", limit: 65_536 })
+      expect(yield* jobs.get("job_oversized")).toBeUndefined()
+      expect(yield* jobs.pendingBackground).toEqual([])
     }),
   )
 

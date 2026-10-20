@@ -9,6 +9,7 @@ import { Deferred, Effect, Exit, Schema, Scope } from "effect"
 import { Config } from "../../config.js"
 import { Environment } from "../../environment/index.js"
 import { Job } from "../../job.js"
+import { Location } from "../../location.js"
 import { FileAccess } from "../../file-access.js"
 import { Permission } from "../../permission.js"
 import { NonNegativeInt } from "../../schema.js"
@@ -115,6 +116,7 @@ export const Plugin = {
   effect: Effect.fn("ShellTool.Plugin")(function* (ctx: Context) {
     const sessions = yield* Session.Service
     const jobs = yield* Job.Service
+    const location = yield* Location.Service
     const scope = yield* Scope.Scope
     const environment = yield* Environment.Service
     const access = yield* FileAccess.Service
@@ -231,7 +233,22 @@ export const Plugin = {
                 title: input.command,
                 queued: true,
                 metadata: { sessionID: context.sessionID, shellID: id },
-                recovery: { kind: "shell", sessionID: context.sessionID, shellID: id, command: input.command },
+                recovery: {
+                  kind: "shell",
+                  sessionID: context.sessionID,
+                  shellID: id,
+                  command: input.command,
+                  request: {
+                    cwd: FileAccess.resolvePath(location.directory, input.workdir ?? "."),
+                    shell: selectedShell,
+                    timeout,
+                    ...(input.queue_timeout !== undefined ? { queueTimeout: input.queue_timeout } : {}),
+                    background: input.background === true,
+                    environment: input.environment ?? "project",
+                    messageID: context.messageID,
+                    toolCallID: context.id,
+                  },
+                },
                 run: (started) =>
                   Effect.gen(function* () {
                     const info = yield* shell
