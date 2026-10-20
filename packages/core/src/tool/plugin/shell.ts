@@ -156,10 +156,12 @@ export const Plugin = {
         )
         yield* access.authorizeExternal([target, ...directories], context)
         // Even a comment-only request can run environment preparation hooks.
+        const posix = !ShellSelect.ps(invocation.shell) && ShellSelect.name(invocation.shell) !== "cmd"
         yield* permission.assert({
           action: name,
           resources: parsed.commands.length ? parsed.commands.map((command) => command.resource) : [invocation.command],
           save: parsed.commands.map((command) => command.save),
+          ...(posix ? {} : { metadata: { posix: false } }),
           sessionID: context.sessionID,
           agent: context.agent,
           source,

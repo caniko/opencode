@@ -7,9 +7,11 @@ import { Wildcard } from "./wildcard.js"
 // escapes retain restrictive matching rather than guessing shell syntax.
 const assignments = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:[^\s'"\\$`;&|<>()]|'[^']*'|"[^"\\$`]*")*[ \t]+)+/
 
-export function match(input: string, pattern: string, effect: string) {
+// PowerShell and cmd have no assignment prefixes: `NAME=value` there names the executable.
+export function match(input: string, pattern: string, effect: string, posix = true) {
   if (!pattern.startsWith("*=* ")) return Wildcard.match(input, pattern)
   if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(input)) return false
+  if (!posix) return effect !== "allow" && Wildcard.match(input, pattern)
   const prefix = assignments.exec(input)?.[0]
   if (!prefix || /^[A-Za-z_][A-Za-z0-9_]*=/.test(input.slice(prefix.length))) {
     return effect !== "allow" && Wildcard.match(input, pattern)

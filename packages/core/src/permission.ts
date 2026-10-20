@@ -86,6 +86,16 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Permissi
 export type Error = BlockedError | CorrectedError
 
 export function evaluate(action: string, resource: string, ...rulesets: Permission.Ruleset[]): Permission.Rule {
+  return evaluateWith(action, resource, rulesets)
+}
+
+// Shell callers mark non-POSIX dialects with `metadata.posix === false`.
+export function evaluateWith(
+  action: string,
+  resource: string,
+  rulesets: Permission.Ruleset[],
+  options: { posix?: boolean } = {},
+): Permission.Rule {
   return (
     rulesets
       .flat()
@@ -93,7 +103,7 @@ export function evaluate(action: string, resource: string, ...rulesets: Permissi
         (rule) =>
           Wildcard.match(action, rule.action) &&
           (action === "shell"
-            ? BashPermission.match(resource, rule.resource, rule.effect)
+            ? BashPermission.match(resource, rule.resource, rule.effect, options.posix ?? true)
             : Wildcard.match(resource, rule.resource)),
       ) ?? {
       action,
@@ -169,8 +179,12 @@ const layer = Layer.effect(
       return merge(agent?.permissions ?? missingAgentPermissions, session.permissions ?? [])
     })
 
-    function denied(input: Pick<Request, "action" | "resources">, rules: Permission.Ruleset) {
-      return input.resources.some((resource) => evaluate(input.action, resource, rules).effect === "deny")
+    const dialect = (input: Pick<Request, "metadata">) => ({ posix: input.metadata?.posix !== false })
+
+    function denied(input: Pick<Request, "action" | "resources" | "metadata">, rules: Permission.Ruleset) {
+      return input.resources.some(
+        (resource) => evaluateWith(input.action, resource, [rules], dialect(input)).effect === "deny",
+      )
     }
 
     function relevant(input: AssertInput, rules: Permission.Ruleset) {
@@ -181,7 +195,9 @@ const layer = Layer.effect(
       const rules = yield* configured(input.sessionID, input.agent)
       if (denied(input, rules)) return { effect: "deny" as const, rules }
       const all = [...rules, ...(yield* savedRules())]
-      const effects = input.resources.map((resource) => evaluate(input.action, resource, all).effect)
+      const effects = input.resources.map(
+        (resource) => evaluateWith(input.action, resource, [all], dialect(input)).effect,
+      )
       const effect: Permission.Effect = effects.includes("ask") ? "ask" : "allow"
       const event = yield* hooks.trigger("permission", "evaluate", {
         sessionID: input.sessionID,
