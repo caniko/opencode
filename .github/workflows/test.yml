@@ -7,6 +7,15 @@ on:
       - v2
   pull_request:
   workflow_dispatch:
+    inputs:
+      timeline_benchmark:
+        description: "Diagnostic-only serial production benchmark; grants no test acceptance"
+        type: boolean
+        default: false
+      source_revision:
+        description: "Exact 40-character source SHA for the diagnostic benchmark"
+        type: string
+        default: ""
 
 concurrency:
   # Keep every run on dev so cancelled checks do not pollute the default branch
@@ -24,6 +33,7 @@ env:
 
 jobs:
   managed-execution:
+    if: ${{ !inputs.timeline_benchmark }}
     name: exact-head managed execution
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -106,6 +116,7 @@ jobs:
           '
 
   affected:
+    if: ${{ !inputs.timeline_benchmark }}
     name: affected packages
     runs-on: ubuntu-24.04
     outputs:
@@ -136,6 +147,7 @@ jobs:
           bun -e 'const result = await Bun.file("affected.json").json(); console.log(`app=${result.packages.count > 0}`)' >> "$GITHUB_OUTPUT"
 
   unit:
+    if: ${{ !inputs.timeline_benchmark }}
     name: unit (${{ matrix.settings.name }})
     strategy:
       fail-fast: false
@@ -448,3 +460,85 @@ jobs:
             .expired == false and .digest == $digest and
             ((.expires_at | fromdateiso8601) - (.created_at | fromdateiso8601) >= 2592000)
           ' "$RUNNER_TEMP/browser-artifact.json"
+
+  timeline-benchmark:
+    name: diagnostic-only production timeline benchmark
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.timeline_benchmark }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CANDIDATE: ${{ inputs.source_revision }}
+      EVIDENCE: ${{ github.workspace }}/timeline-benchmark
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    steps:
+      - name: Require an exact diagnostic source and original hosted attempt
+        run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - name: Bind actual source and hosted environment
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          mkdir -p "$EVIDENCE"
+          git rev-parse HEAD > "$EVIDENCE/revision"
+          uname -a > "$EVIDENCE/host"
+          cp /etc/os-release "$EVIDENCE/os-release"
+          cp "$GITHUB_EVENT_PATH" "$EVIDENCE/event.json"
+          env | grep -E '^(GITHUB_RUN_ID|GITHUB_RUN_ATTEMPT|GITHUB_WORKFLOW_REF|GITHUB_WORKFLOW_SHA|RUNNER_ENVIRONMENT|RUNNER_OS|RUNNER_ARCH|ImageOS|ImageVersion)=' | sort > "$EVIDENCE/environment"
+      - uses: ./.github/actions/setup-bun
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.15"
+      - name: Install locked browser runtime
+        working-directory: packages/app
+        run: bunx playwright install --with-deps chromium
+      - name: Record runtime and execute the existing production benchmark serially
+        working-directory: packages/app
+        env:
+          CI: true
+          PLAYWRIGHT_BUILD: "1"
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/timeline-benchmark/report.json
+          OPENCODE_PERFORMANCE_TRACE_DIR: ${{ github.workspace }}/timeline-benchmark/chrome
+          OPENCODE_PERFORMANCE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          bun --version > "$EVIDENCE/bun-version"
+          node --version > "$EVIDENCE/node-version"
+          bun -e 'console.log(require("@playwright/test/package.json").version)' > "$EVIDENCE/playwright-version"
+          sha256sum "$(command -v bun)" "$(command -v node)" ../../bun.lock ../../flake.lock > "$EVIDENCE/runtime.sha256"
+          find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \) -exec sha256sum {} + >> "$EVIDENCE/runtime.sha256"
+          bunx playwright test --config e2e/performance/playwright.config.ts timeline/session-entry-benchmark.spec.ts timeline/session-timeline-benchmark.spec.ts --grep 'entry:|streams assistant text without remounting or oscillating' --workers=1 --retries=0 --repeat-each=1 --reporter=line,json 2>&1 | tee "$EVIDENCE/benchmark.log"
+      - name: Seal raw diagnostic evidence without granting producer acceptance
+        if: always()
+        run: |
+          if [ -d packages/app/e2e/test-results/performance ]; then
+            cp -a packages/app/e2e/test-results/performance "$EVIDENCE/results"
+          fi
+          find timeline-benchmark -type f ! -name members.sha256 -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE/members.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: evidence
+        if: always()
+        with:
+          name: diagnostic-timeline-${{ inputs.source_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: timeline-benchmark/
+          if-no-files-found: error
+          retention-days: 31
+      - name: Verify actual provider retention and archive digest
+        if: always() && steps.evidence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.evidence.outputs.artifact-digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/timeline-artifact.json"
+          jq -e --arg digest "sha256:$ARTIFACT_DIGEST" '
+            .expired == false and .digest == $digest and
+            ((.expires_at | fromdateiso8601) - (.created_at | fromdateiso8601) >= 2592000)
+          ' "$RUNNER_TEMP/timeline-artifact.json"
