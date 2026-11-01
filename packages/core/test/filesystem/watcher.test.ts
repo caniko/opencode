@@ -2,7 +2,7 @@ import { $ } from "bun"
 import { describe, expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import { Deferred, Duration, Effect, Fiber, Layer, Option, Schedule, Stream } from "effect"
+import { Deferred, Duration, Effect, Fiber, Layer, Logger, Option, Schedule, Stream } from "effect"
 import { Config } from "@opencode/core/config"
 import { ConfigLocationWatcherPlugin } from "@opencode/core/config/plugin/location-watcher"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -686,5 +686,18 @@ describeNative("LocationWatcher", () => {
         { vcs: "hg", watcher },
       )
     }),
+  )
+})
+
+describe("Watcher.subscribeDirectory", () => {
+  const levels: string[] = []
+  const logger = Logger.make((entry) => levels.push(entry.logLevel))
+  it.effect("logs an unsupported backend once as a warning", () =>
+    Effect.gen(function* () {
+      for (const directory of ["/a", "/b", "/a"]) {
+        expect(yield* Watcher.subscribeDirectory(undefined, undefined, directory, [], () => {})).toBeUndefined()
+      }
+      expect(levels).toEqual(["Warn"])
+    }).pipe(Effect.provide(Logger.layer([logger]))),
   )
 })
