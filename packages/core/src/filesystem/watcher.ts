@@ -15,10 +15,12 @@ import loadBinding from "./watcher-binding.js"
 const SUBSCRIBE_TIMEOUT_MS = 10_000
 export const Event = { Updated: FileSystem.Event.Changed }
 
+let bindingError: unknown
 const watcher = lazy((): typeof ParcelWatcher | undefined => {
   try {
     return createWrapper(loadBinding()) as typeof ParcelWatcher
-  } catch {
+  } catch (error) {
+    bindingError = error
     return
   }
 })
@@ -250,6 +252,7 @@ export function subscribeDirectory(
     return Effect.logWarning("watcher backend not supported; filesystem watching is disabled", {
       directory,
       platform: process.platform,
+      error: bindingError instanceof Error ? bindingError.message : bindingError,
     }).pipe(Effect.as(undefined))
   }
   const callback: ParcelWatcher.SubscribeCallback = (error, updates) => {
