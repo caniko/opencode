@@ -107,16 +107,16 @@ describe("callable namespaces", () => {
     expect(diagnostic.kind).toBe("UnknownTool")
     expect(diagnostic.message).toContain("Unknown tool 'issues.missing'")
     expect(diagnostic.suggestions?.[0]).toBe("Use search to find available tools.")
-    expect(diagnostic.suggestions?.[1]).toContain("call them directly as top-level tools")
+    expect(diagnostic.suggestions?.[1]).toContain("outside this program")
   })
 
-  test("an empty search points harness tools at top-level calls", async () => {
+  test("an empty search points other tools outside the program", async () => {
     const result = (await value(runtime, `return search({ query: "zzzz-no-such-tool" })`)) as {
       items: unknown[]
       note?: string
     }
     expect(result.items).toEqual([])
-    expect(result.note).toContain("shell, read, edit and grep")
+    expect(result.note).toContain("outside this program")
   })
 
   test("an unknown tool names the closest match", async () => {

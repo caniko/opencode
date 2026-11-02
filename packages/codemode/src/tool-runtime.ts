@@ -107,7 +107,7 @@ const SearchOutput = Schema.Struct({
   note: Schema.optional(Schema.String),
 })
 const harnessNote =
-  "Harness tools such as shell, read, edit and grep are not available inside execute; call them directly as top-level tools."
+  "Only the tools listed or found by search are callable here. Call any other tool the host provides directly, outside this program."
 export const toolExpression = (path: string) =>
   "tools" +
   path
