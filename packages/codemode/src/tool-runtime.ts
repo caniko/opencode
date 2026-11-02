@@ -104,7 +104,10 @@ const SearchOutput = Schema.Struct({
   items: Schema.Array(SearchItem),
   remaining: NonNegativeInt,
   next: Schema.NullOr(Schema.Struct({ offset: NonNegativeInt })),
+  note: Schema.optional(Schema.String),
 })
+const harnessNote =
+  "Only the tools listed or found by search are callable here. Call any other tool the host provides directly, outside this program."
 export const toolExpression = (path: string) =>
   "tools" +
   path
@@ -274,6 +277,7 @@ const makeSearchTool = (searchIndex: ReadonlyArray<SearchEntry>): Tool => ({
         items,
         remaining,
         next: remaining > 0 ? { offset: offset + items.length } : null,
+        ...(items.length === 0 && trimmed !== "" ? { note: harnessNote } : {}),
       }
     }),
 })
@@ -345,7 +349,7 @@ const resolve = <R>(root: ToolNode<R>, path: ReadonlyArray<string>, index: Reado
       closest
         ? `Unknown tool '${name}'. Did you mean ${toolExpression(closest.description.path)}?`
         : `Unknown tool '${name}'.`,
-      ["Use search to find available tools."],
+      ["Use search to find available tools.", harnessNote],
     )
   }
   if (node.tool === undefined) {

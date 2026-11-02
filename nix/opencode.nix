@@ -1,5 +1,6 @@
 {
   lib,
+  stdenv,
   stdenvNoCC,
   callPackage,
   bun,
@@ -58,7 +59,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     install -Dm755 dist/cli-*/bin/opencode $out/bin/opencode
 
-    # OpenTUI dlopens Wayland for clipboard images.
+    # OpenTUI dlopens Wayland for clipboard images, and the embedded
+    # @parcel/watcher addon needs libstdc++ and libgcc_s (neither is in the
+    # bun binary's NEEDED list, so dlopen fails without them on NixOS).
     wrapProgram $out/bin/opencode \
       --prefix PATH : ${
       lib.makeBinPath (
@@ -69,7 +72,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
         ++ lib.optional stdenvNoCC.hostPlatform.isDarwin sysctl
       )
     } ${lib.optionalString stdenvNoCC.hostPlatform.isLinux ''
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [wayland]}
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [wayland stdenv.cc.cc.lib]}
     ''}
 
     ln -s opencode $out/bin/opencode2

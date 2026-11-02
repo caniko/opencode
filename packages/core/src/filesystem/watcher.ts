@@ -15,10 +15,12 @@ import loadBinding from "./watcher-binding.js"
 const SUBSCRIBE_TIMEOUT_MS = 10_000
 export const Event = { Updated: FileSystem.Event.Changed }
 
+let bindingError: unknown
 const watcher = lazy((): typeof ParcelWatcher | undefined => {
   try {
     return createWrapper(loadBinding()) as typeof ParcelWatcher
-  } catch {
+  } catch (error) {
+    bindingError = error
     return
   }
 })
@@ -234,7 +236,10 @@ export function configured(options?: Options) {
 
 export const node = configured()
 
-function subscribeDirectory(
+// An unsupported backend is a property of the process, not of one directory.
+let unsupportedLogged = false
+
+export function subscribeDirectory(
   native: typeof ParcelWatcher | undefined,
   backend: ParcelWatcher.BackendType | undefined,
   directory: string,
@@ -242,9 +247,13 @@ function subscribeDirectory(
   publish: (update: Update) => void,
 ): Effect.Effect<Subscription | undefined> {
   if (!native || !backend) {
-    return Effect.logError("watcher backend not supported", { directory, platform: process.platform }).pipe(
-      Effect.as(undefined),
-    )
+    if (unsupportedLogged) return Effect.as(Effect.void, undefined)
+    unsupportedLogged = true
+    return Effect.logWarning("watcher backend not supported; filesystem watching is disabled", {
+      directory,
+      platform: process.platform,
+      error: bindingError instanceof Error ? bindingError.message : bindingError,
+    }).pipe(Effect.as(undefined))
   }
   const callback: ParcelWatcher.SubscribeCallback = (error, updates) => {
     if (error) Effect.runFork(Effect.logError("watcher callback failed", { error }))
