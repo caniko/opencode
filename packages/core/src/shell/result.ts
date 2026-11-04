@@ -9,7 +9,7 @@ export type Result = {
   reconciling?: true
 }
 
-type Output = { output: string; truncated: boolean; exit?: number; signal?: string; timeout?: boolean }
+type Output = { output: string; truncated: boolean; file?: string; exit?: number; signal?: string; timeout?: boolean }
 
 const missing = "Shell command output is no longer available."
 export const unavailable: Shell.Output = {
@@ -23,6 +23,8 @@ export function output(result: Result): Output {
   return {
     output: result.capture?.output ?? unavailable.output,
     truncated: result.capture?.truncated ?? false,
+    // Complete capture for custody consumers; the model-visible output may be a bounded tail.
+    file: result.info.file,
     ...(result.info.exit !== undefined ? { exit: result.info.exit } : {}),
     ...(result.info.signal !== undefined ? { signal: result.info.signal } : {}),
     ...(result.info.status === "timeout" ? { timeout: true } : {}),

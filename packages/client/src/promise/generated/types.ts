@@ -117,6 +117,7 @@ export type SessionMessageShell = {
   status: "queued" | "running" | "exited" | "timeout" | "killed" | "failed"
   exit?: number | "Infinity" | "-Infinity" | "NaN"
   output?: { output: string; cursor: number; size: number; truncated: boolean }
+  outputPath?: string
 }
 
 export type SessionMessageProviderState = { [x: string]: JsonValue }
@@ -3200,6 +3201,7 @@ export type SessionImportInput = {
             readonly size: number
             readonly truncated: boolean
           }
+          readonly outputPath?: string
         }
       | {
           readonly id: string
@@ -3537,6 +3539,7 @@ export type SessionImportInput = {
             readonly size: number
             readonly truncated: boolean
           }
+          readonly outputPath?: string
         }
       | {
           readonly id: string
@@ -3874,6 +3877,7 @@ export type SessionImportInput = {
             readonly size: number
             readonly truncated: boolean
           }
+          readonly outputPath?: string
         }
       | {
           readonly id: string

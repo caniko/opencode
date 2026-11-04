@@ -116,6 +116,8 @@ export const Shell = Schema.Struct({
   status: ShellSchema.Status,
   exit: Schema.Number.pipe(optional),
   output: ShellSchema.Output.pipe(optional),
+  // Absolute capture file for the complete output when `output` is a bounded tail.
+  outputPath: Schema.String.pipe(optional),
   time: Schema.Struct({
     created: DateTimeUtcFromMillis,
     completed: DateTimeUtcFromMillis.pipe(optional),

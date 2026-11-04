@@ -206,6 +206,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
                 draft.status = event.data.shell.status
                 draft.exit = event.data.shell.exit
                 draft.output = event.data.output
+                if (event.data.output?.truncated === true) draft.outputPath = event.data.shell.file
                 draft.time.completed = created
               }),
             )
