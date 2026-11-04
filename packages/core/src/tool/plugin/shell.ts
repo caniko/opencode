@@ -91,14 +91,18 @@ const resultMessages = (output: Output) => {
   return [...(output.output ? [output.output] : []), ...(notice ? [notice] : [])]
 }
 
-const toolResult = (output: Output) => {
+const toolResult = (output: Output & { readonly file?: string }) => {
+  // The capture path stays out of the structured outcome; consumers that need
+  // complete bytes use the metadata reference instead of the bounded preview.
+  const { file, ...structured } = output
   return {
-    output,
+    output: structured,
     content: resultMessages(output).map((text) => ({ type: "text" as const, text })),
     metadata: {
       status: output.status,
       ...ShellResult.metadata(output),
       ...(output.shellID !== undefined ? { shellID: output.shellID } : {}),
+      ...(file !== undefined && output.truncated ? { outputPath: file } : {}),
     },
   }
 }
