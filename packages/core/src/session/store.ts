@@ -66,10 +66,9 @@ export type MessagesInput = {
   }
 }
 
-/** A child claim released by {@link Interface.releaseChildClaims}, with the outcome it already carried. */
+/** A child claim released by {@link Interface.releaseChildClaims}. */
 export interface ReleasedChild {
   readonly id: Session.ID
-  readonly outcome?: NonNullable<Session.Info["outcome"]>
 }
 
 export interface Interface {
@@ -273,12 +272,9 @@ const layer = Layer.effect(
               recoverable.length > 0 ? notInArray(SessionTable.id, Array.from(recoverable)) : undefined,
             ),
           )
-          .returning({ id: SessionTable.id, outcome: SessionTable.idle_outcome })
+          .returning({ id: SessionTable.id })
           .all()
-          .pipe(
-            Effect.orDie,
-            Effect.map((rows) => rows.map((row) => ({ id: row.id, outcome: row.outcome ?? undefined }))),
-          ),
+          .pipe(Effect.orDie),
       ),
       countResume: Effect.fn("SessionStore.countResume")(function* (sessionID) {
         const row = yield* db

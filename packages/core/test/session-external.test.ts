@@ -275,6 +275,13 @@ describe("SessionExternal", () => {
       // A foreground child owns only a process-local Job record, so a restart leaves
       // its claim without a durable background record to resume it from.
       const child = yield* sessions.create({ parentID: root })
+      // An outcome left from the child's previous turn must not hide the abandoned one.
+      yield* db
+        .update(SessionTable)
+        .set({ idle_outcome: "succeeded" })
+        .where(eq(SessionTable.id, child.id))
+        .run()
+        .pipe(Effect.orDie)
       yield* store.claim(root)
       yield* store.claim(child.id)
       expect(yield* jobs.pendingBackground).toEqual([])

@@ -247,14 +247,13 @@ export const layer = (options?: Options) =>
             // from the owner, so release its claim as boot recovery does; background
             // children keep theirs until their job reports.
             const released = yield* store.releaseChildClaims([...children, ...active], only)
-            // Nothing resumes a released child whose execution died in the restart, so
-            // record the interruption. Only a non-shutdown reason projects the terminal
-            // outcome; without one the child's history cannot explain the end and the
-            // external receipt would never settle.
+            // A claim exists only while an execution runs, so every released child's
+            // execution died in the restart and nothing resumes it. Record the
+            // interruption: only a non-shutdown reason projects the terminal outcome,
+            // and an outcome left from an earlier turn would describe the wrong run.
             yield* Effect.forEach(
-              released.filter((child) => child.outcome === undefined),
-              (child) =>
-                bus.publish(SessionEvent.Execution.Interrupted, { sessionID: child.id, reason: "superseded" }),
+              released,
+              (child) => bus.publish(SessionEvent.Execution.Interrupted, { sessionID: child.id, reason: "superseded" }),
               { discard: true },
             )
           } else {
