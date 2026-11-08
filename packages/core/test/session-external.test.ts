@@ -262,6 +262,88 @@ describe("SessionExternal", () => {
     }),
   )
 
+  it.effect("releases a suspended foreground child when its external owner reconciles", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const store = yield* SessionStore.Service
+      const jobs = yield* Job.Service
+      const db = (yield* Database.Service).db
+      const external = yield* SessionExternal.make.pipe(Effect.provide(SessionExecution.noopLayer))
+      const input = request("foreground", (yield* external.info).backendID)
+      const admitted = yield* external.admit(input)
+      const root = admitted.sessionID
+      // A foreground child owns only a process-local Job record, so a restart leaves
+      // its claim without a durable background record to resume it from.
+      const child = yield* sessions.create({ parentID: root })
+      yield* store.claim(root)
+      yield* store.claim(child.id)
+      expect(yield* jobs.pendingBackground).toEqual([])
+      const tmp = yield* tmpdirScoped()
+      const snapshot = path.join(tmp.path, "foreground.sqlite")
+      yield* db.run(sql`VACUUM INTO ${snapshot}`).pipe(Effect.orDie)
+      const restoredLayer = AppNodeBuilder.build(
+        LayerNode.group([
+          Session.node,
+          SessionEnvironment.node,
+          SessionStore.node,
+          Job.node,
+          Database.node,
+          Bus.node,
+          SessionRestart.node,
+        ]),
+        [
+          Database.node.replace(Database.configured({ path: snapshot })),
+          Bus.node.replace(Bus.configured({ persist: true })),
+          Project.node.replace(globalProjectNode),
+          LocationServiceMap.node.replace(promptLocationNode),
+          SessionExecution.node.replace(SessionExecution.noopLayer),
+        ],
+      ).pipe(Layer.fresh)
+
+      yield* Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const store = yield* SessionStore.Service
+        const environments = yield* SessionEnvironment.Service
+        const db = (yield* Database.Service).db
+        const external = yield* SessionExternal.make.pipe(Effect.provide(SessionExecution.noopLayer))
+        const backend = yield* external.info
+        expect(backend.backendGeneration).not.toBe(admitted.backendGeneration)
+        expect(yield* external.status(input)).toMatchObject({
+          admitted: true,
+          settled: false,
+          lineage: [
+            { sessionID: root, active: false, pending: 1, suspended: true },
+            { sessionID: child.id, active: false, pending: 0, suspended: true },
+          ],
+        })
+        yield* external.resume({ ...input, backendGeneration: backend.backendGeneration })
+        expect(yield* environments.ready(root)).toBe(true)
+        expect(yield* environments.ready(child.id)).toBe(true)
+        // The resumed owner settles the rest of its lineage; the released child must not
+        // keep the receipt suspended forever.
+        yield* store.release(root)
+        yield* Effect.forEach(
+          yield* sessions.inbox(root),
+          (item) =>
+            sessions.cancelInbox({ sessionID: root, inboxID: item.id }).pipe(
+              Effect.catchTag("Session.InboxConflictError", () => Effect.void),
+              Effect.orDie,
+            ),
+          { discard: true },
+        )
+        yield* db
+          .update(SessionTable)
+          .set({ idle_outcome: "succeeded" })
+          .where(inArray(SessionTable.id, [root, child.id]))
+          .run()
+          .pipe(Effect.orDie)
+        const settled = yield* external.status(input)
+        expect(settled.lineage.find((item) => item.sessionID === child.id)).toMatchObject({ suspended: false })
+        expect(settled).toMatchObject({ admitted: true, settled: true })
+      }).pipe(Effect.provide(restoredLayer))
+    }),
+  )
+
   it.effect("keeps an admitted Session unsettled until an owned background result is delivered", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service

@@ -104,10 +104,7 @@ export const layer = (options?: Options) =>
         return true
       })
 
-      const restartMessage = (
-        background: Job.Background,
-        recovery: Exclude<Job.Recovery, { kind: "subagent" }>,
-      ) => {
+      const restartMessage = (background: Job.Background, recovery: Exclude<Job.Recovery, { kind: "subagent" }>) => {
         const state = background.status === "running" ? "cancelled" : background.status
         if (recovery.kind === "shell") {
           const text =
@@ -244,11 +241,19 @@ export const layer = (options?: Options) =>
               (sessionID) => (!only || only.has(sessionID)) && !active.has(sessionID),
             ),
           )
-          const parked = yield* Effect.filter(
-            (yield* store.list()).filter((session) => session.parentID && session.environmentRequired),
-            (session) => environments.ready(session.id).pipe(Effect.map((ready) => !ready)),
-          )
-          if (!only) yield* store.releaseChildClaims([...children, ...parked.map((session) => session.id)])
+          if (only)
+            // A scoped reconcile owns its whole lineage. A foreground child has no
+            // durable background Job record to resume it and inherits its environment
+            // from the owner, so release its claim as boot recovery does; background
+            // children keep theirs until their job reports.
+            yield* store.releaseChildClaims([...children, ...active], only)
+          else {
+            const parked = yield* Effect.filter(
+              (yield* store.list()).filter((session) => session.parentID && session.environmentRequired),
+              (session) => environments.ready(session.id).pipe(Effect.map((ready) => !ready)),
+            )
+            yield* store.releaseChildClaims([...children, ...parked.map((session) => session.id)])
+          }
           yield* Effect.forEach(
             // Admit shell outcomes before a recovered child can start its first model request.
             pending.toSorted((a, b) => Number(a.recovery.kind === "subagent") - Number(b.recovery.kind === "subagent")),

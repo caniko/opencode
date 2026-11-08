@@ -1,6 +1,21 @@
 export * as SessionStore from "./store.js"
 
-import { and, asc, desc, eq, gt, isNotNull, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm"
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Project } from "@opencode/schema/project"
 import { Workspace } from "@opencode/schema/workspace"
@@ -81,9 +96,13 @@ export interface Interface {
   readonly release: (sessionID: Session.ID) => Effect.Effect<void>
   /**
    * Clears orphaned child claims except children owned by recoverable
-   * background subagent jobs.
+   * background subagent jobs. `scope` restricts the sweep to those Sessions,
+   * so a scoped reconcile never clears another lineage's claims.
    */
-  readonly releaseChildClaims: (recoverable: ReadonlyArray<Session.ID>) => Effect.Effect<void>
+  readonly releaseChildClaims: (
+    recoverable: ReadonlyArray<Session.ID>,
+    scope?: ReadonlySet<Session.ID>,
+  ) => Effect.Effect<void>
   /**
    * Durably counts one more resume of an orphaned claim, returning the new
    * total — or undefined when the Session no longer exists.
@@ -235,7 +254,7 @@ const layer = Layer.effect(
           .run()
           .pipe(Effect.orDie)
       }),
-      releaseChildClaims: Effect.fn("SessionStore.releaseChildClaims")((recoverable) =>
+      releaseChildClaims: Effect.fn("SessionStore.releaseChildClaims")((recoverable, scope) =>
         db
           .update(SessionTable)
           .set({ time_suspended: null, resume_attempts: 0, time_updated: sql`${SessionTable.time_updated}` })
@@ -243,6 +262,7 @@ const layer = Layer.effect(
             and(
               isNotNull(SessionTable.time_suspended),
               isNotNull(SessionTable.parent_id),
+              scope ? inArray(SessionTable.id, [...scope]) : undefined,
               recoverable.length > 0 ? notInArray(SessionTable.id, Array.from(recoverable)) : undefined,
             ),
           )
