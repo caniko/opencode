@@ -16,6 +16,12 @@ export interface Interface {
   readonly backendID: string
   readonly generation: string
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<Variables | undefined>
+  /**
+   * Base environment for shells. External managed Sessions keep the backend's
+   * own environment underneath consumer-supplied variables; ordinary scoped
+   * environments replace it.
+   */
+  readonly shellBase: (sessionID: SessionSchema.ID) => Effect.Effect<Readonly<Record<string, string | undefined>>>
   readonly set: (sessionID: SessionSchema.ID, variables: Variables) => Effect.Effect<void>
   readonly clear: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   readonly ready: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
@@ -57,6 +63,21 @@ export const layer = Layer.effect(
       if (variables !== undefined) return variables
       return parentID ? yield* get(parentID) : undefined
     })
+    const external = Effect.fnUntraced(function* (sessionID: SessionSchema.ID): Effect.fn.Return<boolean> {
+      const session = yield* store.get(sessionID)
+      if (session?.environmentRequired !== true) return false
+      const parentID = session.parentID ?? session.fork?.sessionID
+      if (parentID && (yield* store.get(parentID))?.environmentRequired === true) return yield* external(parentID)
+      return true
+    })
+    const shellBase = Effect.fn("SessionEnvironment.shellBase")(function* (
+      sessionID: SessionSchema.ID,
+    ): Effect.fn.Return<Readonly<Record<string, string | undefined>>> {
+      const variables = yield* get(sessionID)
+      if (variables === undefined) return process.env
+      if (!(yield* external(sessionID))) return variables
+      return { ...process.env, ...variables }
+    })
     const ready = Effect.fn("SessionEnvironment.ready")(function* (
       sessionID: SessionSchema.ID,
     ): Effect.fn.Return<boolean> {
@@ -78,6 +99,7 @@ export const layer = Layer.effect(
       backendID,
       generation,
       get,
+      shellBase,
       ready,
       restore: (sessionID, variables, expected) =>
         Effect.sync(() => {

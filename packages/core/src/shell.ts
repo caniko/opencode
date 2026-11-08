@@ -269,7 +269,9 @@ const layer = () =>
         const baseEnv =
           location.workspaceID !== undefined
             ? undefined
-            : ((Schema.is(SessionSchema.ID)(sessionID) ? yield* environments.get(sessionID) : undefined) ?? process.env)
+            : Schema.is(SessionSchema.ID)(sessionID)
+              ? yield* environments.shellBase(sessionID)
+              : process.env
         const invocation: ShellCreateBefore = {
           command: input.command,
           cwd: input.cwd ?? location.directory,

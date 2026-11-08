@@ -14,6 +14,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Hash } from "@opencode/util/hash"
 import { Bus } from "@opencode/core/bus"
+import { Job } from "@opencode/core/job"
 import { EventTable } from "@opencode/core/event/sql"
 import { Instructions } from "@opencode/core/instructions/index"
 import { Location } from "@opencode/core/location"
@@ -33,6 +34,8 @@ import { SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { SessionEnvironment } from "@opencode/core/session/environment"
+import { SessionExternal } from "@opencode/core/session/external"
+import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { Workspace } from "@opencode/core/workspace"
 import { Expected } from "./lib/session-message"
 import { testEffect } from "./lib/effect"
@@ -66,7 +69,18 @@ const it = testEffect(
 )
 const liveIt = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, Project.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      Project.node,
+      SessionProjector.node,
+      SessionStore.node,
+      Session.node,
+      SessionEnvironment.node,
+      SessionExecution.node,
+      Job.node,
+      SessionRestart.node,
+    ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       SessionExecution.node.replace(SessionExecution.noopLayer),
@@ -1188,6 +1202,69 @@ describe("Session.create", () => {
         expect(shell?.time.completed).toBeDefined()
       }),
     ),
+  )
+
+  liveIt.live(
+    "keeps the backend environment for external session shells without leaking it into ordinary ones",
+    () =>
+      withTmp((directory) =>
+        Effect.gen(function* () {
+          expect(process.env.PATH).toBeDefined()
+          const backendPath = process.env.PATH!
+          const session = yield* Session.Service
+          const external = yield* SessionExternal.make
+          const backendID = (yield* external.info).backendID
+          const input = (suffix: string) => ({
+            key: `paperclip:${suffix}`,
+            body: JSON.stringify({
+              version: 1,
+              backendID,
+              owner: "paperclip:company:agent",
+              sessionID: `ses_external_${suffix}`,
+              inputID: `msg_external_${suffix}`,
+              location: { directory },
+              prompt: { text: "Only owned work" },
+              environment: { PAPERCLIP_RUN_ID: suffix },
+            }),
+          })
+
+          // The consumer only sends its own variables; the backend still owns PATH and HOME.
+          const managed = input("shell")
+          const admitted = yield* external.admit(managed)
+          yield* external.resume({ ...managed, backendGeneration: admitted.backendGeneration })
+          const managedID = Session.ID.make(admitted.sessionID)
+          yield* session.shell({
+            sessionID: managedID,
+            command:
+              process.platform === "win32"
+                ? "[Console]::Out.Write($env:PATH + '|' + $env:PAPERCLIP_RUN_ID)"
+                : 'printf \'%s|%s\' "$PATH" "$PAPERCLIP_RUN_ID"',
+          })
+          const managedShell = (yield* session.messages({ sessionID: managedID, order: "asc" })).find(
+            (message): message is SessionMessage.Shell => message.type === "shell",
+          )
+          expect(managedShell?.output?.output).toContain(`${backendPath}|shell`)
+
+          // An ordinary scoped environment remains a replacement snapshot.
+          const ordinary = yield* session.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(directory) }),
+          })
+          yield* session.environment({ sessionID: ordinary.id, variables: { OPENCODE_SESSION_ENV_TEST: "scoped" } })
+          yield* session.shell({
+            sessionID: ordinary.id,
+            command:
+              process.platform === "win32"
+                ? "[Console]::Out.Write($env:PATH + '|' + $env:OPENCODE_SESSION_ENV_TEST)"
+                : 'printf \'%s|%s\' "${PATH-unset}" "$OPENCODE_SESSION_ENV_TEST"',
+          })
+          const ordinaryShell = (yield* session.messages({ sessionID: ordinary.id, order: "asc" })).find(
+            (message): message is SessionMessage.Shell => message.type === "shell",
+          )
+          expect(ordinaryShell?.output?.output).toContain("|scoped")
+          expect(ordinaryShell?.output?.output).not.toContain(backendPath)
+        }),
+      ),
+    { timeout: 30_000 },
   )
 
   it.effect("switches the selected agent through the durable Session event", () =>
