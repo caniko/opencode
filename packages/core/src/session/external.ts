@@ -117,7 +117,12 @@ export const make = Effect.gen(function* () {
   const receipt = Effect.fnUntraced(function* (binding: Binding): Effect.fn.Return<SessionExternal.Receipt> {
     const members = yield* lineage(binding.session_id)
     const infos = yield* Effect.forEach(members, (id) => sessions.get(id).pipe(Effect.orDie))
-    const runningJobs = (yield* jobs.forSessions(new Set(members))).some((job) => job.status === "running")
+    const owned = new Set(members)
+    const runningJobs = (yield* jobs.forSessions(owned)).some((job) => job.status === "running")
+    // A durable result awaiting delivery (for example after a backend restart) is still owned work.
+    const parked = (yield* jobs.pendingBackground).some((background) =>
+      Job.recoverySessions(background.recovery).some((id) => owned.has(id)),
+    )
     const observations = yield* Effect.forEach(members, (id) =>
       Effect.gen(function* () {
         const session = yield* store.get(id)
@@ -138,6 +143,7 @@ export const make = Effect.gen(function* () {
     )
     const settled =
       !runningJobs &&
+      !parked &&
       observations.every((item) => !item.active && !item.pending && !item.suspended) &&
       (binding.stop_requested ||
         (binding.admitted && observations.length > 0 && observations.every((item) => item.outcome !== undefined)))

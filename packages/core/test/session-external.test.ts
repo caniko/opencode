@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Context, Deferred, Effect, Layer } from "effect"
-import { sql } from "drizzle-orm"
+import { inArray, sql } from "drizzle-orm"
 import path from "path"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Session } from "@opencode/core/session"
@@ -8,6 +8,7 @@ import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionExternal } from "@opencode/core/session/external"
 import { SessionMessage } from "@opencode/core/session/message"
+import { SessionTable } from "@opencode/core/session/sql"
 import { SessionEvent } from "@opencode/core/session/event"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { SessionEnvironment } from "@opencode/core/session/environment"
@@ -258,6 +259,52 @@ describe("SessionExternal", () => {
         expect(yield* sessions.inbox(child.id)).toEqual([])
         expect(yield* sessions.inbox(personal.id)).toHaveLength(1)
       }).pipe(Effect.provide(restoredLayer(stoppedSnapshot)))
+    }),
+  )
+
+  it.effect("keeps an admitted Session unsettled until an owned background result is delivered", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const jobs = yield* Job.Service
+      const db = (yield* Database.Service).db
+      const external = yield* SessionExternal.make.pipe(Effect.provide(SessionExecution.noopLayer))
+      const input = request("delivery", (yield* external.info).backendID)
+      const admitted = yield* external.admit(input)
+      const root = Session.ID.make(admitted.sessionID)
+      const child = yield* sessions.create({ parentID: root })
+      const notificationID = SessionMessage.ID.make("msg_external_delivery_job")
+      const job = yield* jobs.start({
+        id: "delivery",
+        type: "subagent",
+        notificationID,
+        recovery: {
+          kind: "subagent",
+          parentSessionID: root,
+          childSessionID: child.id,
+          agent: "general",
+          description: "Child result",
+        },
+        run: Effect.succeed("Child result"),
+      })
+      expect(yield* jobs.wait({ id: job.id })).toMatchObject({
+        timedOut: false,
+        info: { status: "completed" },
+      })
+      yield* jobs.background(job.id)
+      // The completed result is parked in the durable Job row until delivery.
+      expect(yield* jobs.pendingBackground).toMatchObject([{ id: job.id, notificationID, status: "completed" }])
+      yield* sessions.cancelInbox({ sessionID: root, inboxID: admitted.inputID })
+      yield* db
+        .update(SessionTable)
+        .set({ idle_outcome: "succeeded" })
+        .where(inArray(SessionTable.id, [root, child.id]))
+        .run()
+        .pipe(Effect.orDie)
+      const parked = yield* external.status(input)
+      expect(parked).toMatchObject({ admitted: true, settled: false })
+      expect(parked.lineage.map((item) => item.outcome)).toEqual(["succeeded", "succeeded"])
+      yield* jobs.completeBackground(notificationID)
+      expect(yield* external.status(input)).toMatchObject({ admitted: true, settled: true })
     }),
   )
 
