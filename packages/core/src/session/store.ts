@@ -66,6 +66,12 @@ export type MessagesInput = {
   }
 }
 
+/** A child claim released by {@link Interface.releaseChildClaims}, with the outcome it already carried. */
+export interface ReleasedChild {
+  readonly id: Session.ID
+  readonly outcome?: NonNullable<Session.Info["outcome"]>
+}
+
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
@@ -97,12 +103,13 @@ export interface Interface {
   /**
    * Clears orphaned child claims except children owned by recoverable
    * background subagent jobs. `scope` restricts the sweep to those Sessions,
-   * so a scoped reconcile never clears another lineage's claims.
+   * so a scoped reconcile never clears another lineage's claims. Returns the
+   * claims it released so a caller can terminalize children left without one.
    */
   readonly releaseChildClaims: (
     recoverable: ReadonlyArray<Session.ID>,
     scope?: ReadonlySet<Session.ID>,
-  ) => Effect.Effect<void>
+  ) => Effect.Effect<ReadonlyArray<ReleasedChild>>
   /**
    * Durably counts one more resume of an orphaned claim, returning the new
    * total — or undefined when the Session no longer exists.
@@ -266,8 +273,12 @@ const layer = Layer.effect(
               recoverable.length > 0 ? notInArray(SessionTable.id, Array.from(recoverable)) : undefined,
             ),
           )
-          .run()
-          .pipe(Effect.orDie, Effect.asVoid),
+          .returning({ id: SessionTable.id, outcome: SessionTable.idle_outcome })
+          .all()
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows.map((row) => ({ id: row.id, outcome: row.outcome ?? undefined }))),
+          ),
       ),
       countResume: Effect.fn("SessionStore.countResume")(function* (sessionID) {
         const row = yield* db

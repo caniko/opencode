@@ -241,13 +241,23 @@ export const layer = (options?: Options) =>
               (sessionID) => (!only || only.has(sessionID)) && !active.has(sessionID),
             ),
           )
-          if (only)
+          if (only) {
             // A scoped reconcile owns its whole lineage. A foreground child has no
             // durable background Job record to resume it and inherits its environment
             // from the owner, so release its claim as boot recovery does; background
             // children keep theirs until their job reports.
-            yield* store.releaseChildClaims([...children, ...active], only)
-          else {
+            const released = yield* store.releaseChildClaims([...children, ...active], only)
+            // Nothing resumes a released child whose execution died in the restart, so
+            // record the interruption. Only a non-shutdown reason projects the terminal
+            // outcome; without one the child's history cannot explain the end and the
+            // external receipt would never settle.
+            yield* Effect.forEach(
+              released.filter((child) => child.outcome === undefined),
+              (child) =>
+                bus.publish(SessionEvent.Execution.Interrupted, { sessionID: child.id, reason: "superseded" }),
+              { discard: true },
+            )
+          } else {
             const parked = yield* Effect.filter(
               (yield* store.list()).filter((session) => session.parentID && session.environmentRequired),
               (session) => environments.ready(session.id).pipe(Effect.map((ready) => !ready)),

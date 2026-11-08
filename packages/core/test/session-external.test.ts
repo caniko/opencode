@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Context, Deferred, Effect, Layer } from "effect"
-import { inArray, sql } from "drizzle-orm"
+import { eq, inArray, sql } from "drizzle-orm"
 import path from "path"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Session } from "@opencode/core/session"
@@ -331,15 +331,24 @@ describe("SessionExternal", () => {
             ),
           { discard: true },
         )
+        // Only the owner completes its turn; the abandoned child has no execution
+        // left to record an outcome of its own.
         yield* db
           .update(SessionTable)
           .set({ idle_outcome: "succeeded" })
-          .where(inArray(SessionTable.id, [root, child.id]))
+          .where(eq(SessionTable.id, root))
           .run()
           .pipe(Effect.orDie)
         const settled = yield* external.status(input)
-        expect(settled.lineage.find((item) => item.sessionID === child.id)).toMatchObject({ suspended: false })
+        expect(settled.lineage.find((item) => item.sessionID === child.id)).toMatchObject({
+          suspended: false,
+          outcome: "interrupted",
+        })
         expect(settled).toMatchObject({ admitted: true, settled: true })
+        // Recovery terminalizes the child through the event path, so its history says why it ended.
+        expect(yield* store.context(child.id)).toContainEqual(
+          expect.objectContaining({ type: "idle", outcome: "interrupted" }),
+        )
       }).pipe(Effect.provide(restoredLayer))
     }),
   )
