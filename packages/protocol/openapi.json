@@ -912,6 +912,309 @@
         }
       }
     },
+    "/api/session/external": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.external.info",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "SessionExternal.Backend",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExternal.Backend"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Discover the durable backend database identity and process generation without reserving or starting work.",
+        "summary": "Inspect the external execution backend"
+      }
+    },
+    "/api/session/external/admit": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.external.admit",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "SessionExternal.Receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExternal.Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Bind exact request bytes to an immutable key and durably admit input without starting model execution.",
+        "summary": "Admit an externally owned session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionExternal.Request"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/session/external/status": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.external.status",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "SessionExternal.Receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExternal.Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read a digest-bound ownership and lineage receipt. An uncertain request reserves its identity without admitting work.",
+        "summary": "Reconcile external session ownership",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionExternal.Request"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/session/external/resume": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.external.resume",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "SessionExternal.Receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExternal.Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Restore this process generation's environment only after checking durable Stop, then reconcile and wake the owned lineage.",
+        "summary": "Resume an externally owned session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "$ref": "#/components/schemas/SessionExternal.Key"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "backendGeneration": {
+                    "type": "string"
+                  }
+                },
+                "required": ["key", "body", "backendGeneration"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/session/external/stop": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.external.stop",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "SessionExternal.Receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExternal.Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Persist Stop before cancellation, including before admission. Acknowledge settlement only after owned execution, inbox and background jobs settle.",
+        "summary": "Stop an externally owned session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionExternal.Request"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
     "/api/session": {
       "get": {
         "tags": ["session"],
@@ -1235,6 +1538,16 @@
                     "anyOf": [
                       {
                         "$ref": "#/components/schemas/Session.Metadata"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "environmentRequired": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
                       },
                       {
                         "type": "null"
@@ -23152,6 +23465,9 @@
           "metadata": {
             "$ref": "#/components/schemas/Session.Metadata"
           },
+          "environmentRequired": {
+            "type": "boolean"
+          },
           "permissions": {
             "$ref": "#/components/schemas/Permission.Ruleset"
           },
@@ -24128,6 +24444,147 @@
           }
         },
         "required": ["_tag", "sessionID", "message"],
+        "additionalProperties": false
+      },
+      "SessionExternal.Backend": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "enum": [1]
+          },
+          "backendID": {
+            "type": "string"
+          },
+          "backendGeneration": {
+            "type": "string"
+          }
+        },
+        "required": ["version", "backendID", "backendGeneration"],
+        "additionalProperties": false
+      },
+      "SessionExternal.Key": {
+        "type": "string"
+      },
+      "SessionExternal.Receipt": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "enum": [1]
+          },
+          "key": {
+            "$ref": "#/components/schemas/SessionExternal.Key"
+          },
+          "bodySha256": {
+            "type": "string"
+          },
+          "backendID": {
+            "type": "string"
+          },
+          "backendGeneration": {
+            "type": "string"
+          },
+          "sessionID": {
+            "$ref": "#/components/schemas/Session.ID"
+          },
+          "inputID": {
+            "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "admitted": {
+            "type": "boolean"
+          },
+          "stopRequested": {
+            "type": "boolean"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "lineage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessionID": {
+                  "$ref": "#/components/schemas/Session.ID"
+                },
+                "active": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string",
+                      "enum": ["Infinity", "-Infinity", "NaN"]
+                    }
+                  ]
+                },
+                "suspended": {
+                  "type": "boolean"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": ["succeeded", "failed", "interrupted"]
+                }
+              },
+              "required": ["sessionID", "active", "pending", "suspended"],
+              "additionalProperties": false
+            }
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string"
+              },
+              "costUsd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
+              },
+              "tokens": {
+                "$ref": "#/components/schemas/TokenUsage.Info"
+              }
+            },
+            "required": ["summary", "costUsd", "tokens"],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "version",
+          "key",
+          "bodySha256",
+          "backendID",
+          "backendGeneration",
+          "sessionID",
+          "inputID",
+          "admitted",
+          "stopRequested",
+          "settled",
+          "lineage"
+        ],
+        "additionalProperties": false
+      },
+      "SessionExternal.Request": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/SessionExternal.Key"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": ["key", "body"],
         "additionalProperties": false
       },
       "SessionGenerateResponse": {

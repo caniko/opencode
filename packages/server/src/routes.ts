@@ -19,6 +19,7 @@ import { Session } from "@opencode/core/session"
 import { Instance } from "@opencode/core/instance/service"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
+import { SessionExternal } from "@opencode/core/session/external"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { Job } from "@opencode/core/job"
 import { KV } from "@opencode/core/kv"
@@ -69,6 +70,7 @@ const applicationServiceNodes = [
   Instance.node,
   SessionTransfer.node,
   InstructionEntry.node,
+  SessionExternal.node,
   SdkPlugins.node,
   PluginUpdate.node,
   PermissionSaved.node,

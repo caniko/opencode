@@ -39,6 +39,9 @@ const Background = Schema.Struct({
 
 export type Background = typeof Background.Type
 export type Recovery = Background["recovery"]
+/** Sessions a recoverable job belongs to: subagent work spans its parent and child, everything else one Session. */
+export const recoverySessions = (recovery: Recovery): readonly SessionSchema.ID[] =>
+  recovery.kind === "subagent" ? [recovery.parentSessionID, recovery.childSessionID] : [recovery.sessionID]
 export type Status = Background["status"]
 
 const decodeBackground = Schema.decodeUnknownResult(Background)
@@ -132,6 +135,8 @@ export type BackgroundAllInput = {
 }
 
 export interface Interface {
+  /** Process-local recoverable jobs owned by any of these Sessions, including background work. */
+  readonly forSessions: (sessionIDs: ReadonlySet<SessionSchema.ID>) => Effect.Effect<readonly Info[]>
   readonly get: (id: string) => Effect.Effect<Info | undefined>
   readonly start: (input: StartInput) => Effect.Effect<Info>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
@@ -550,6 +555,17 @@ export const make = Effect.gen(function* () {
   )
 
   return Service.of({
+    forSessions: (sessionIDs) =>
+      SynchronizedRef.get(state.jobs).pipe(
+        Effect.map((jobs) =>
+          [...jobs.values()]
+            .filter(
+              (job) =>
+                job.recovery && recoverySessions(job.recovery).some((sessionID) => sessionIDs.has(sessionID)),
+            )
+            .map(snapshot),
+        ),
+      ),
     get,
     start,
     wait,

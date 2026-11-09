@@ -67,6 +67,27 @@ The public interrupt operation verifies that the durable Session exists. An unkn
 
 Execution commits a write-ahead claim when a process-local busy period starts. Success, failure, and user interruption release the claim; shutdown interruption and unclean process death preserve it. On startup, managed Node and fetch runtimes resume claimed top-level Sessions, append a durable continuation instruction, and count recovery attempts. Recovery is bounded per claimed execution but does not guarantee exactly-once provider requests or tool effects.
 
+## Externally Owned Execution
+
+`SessionExternal` adds a separate admission contract for a controller that uses the existing managed backend. `opencode session external info|admit|status|resume|stop` discovers an authenticated loopback registration without starting, stopping, or replacing that backend. The corresponding authenticated API lives under `/api/session/external`.
+
+The controller first discovers the durable `backendID` and current `backendGeneration`. It then checkpoints an immutable `{ key, body }` request before admission. `body` is the exact UTF-8 JSON string described by `SessionExternal.Body`; it includes the backend identity, reserved Session and input IDs, prompt, placement, and scoped environment. Retries retain the original bytes. Reusing a key with different bytes, adopting an existing Session, or contacting a different backend database fails.
+
+The lifecycle is explicit:
+
+- `admit` reserves identity and durably queues input without starting model execution.
+- `status` returns the request digest, backend identity, owned lineage, activity, pending input, and settlement. An uncertain request reserves identity without admitting work.
+- `resume` restores the in-memory environment for the observed process generation before waking owned work. After a backend restart, required-environment Sessions remain suspended until reconciliation. Environment values are not persisted by the backend.
+- `stop` persists a tombstone before cancelling owned execution, jobs, pending background work, and inbox items. It discovers children and forks before reporting settlement. A Stop before admission prevents later execution.
+
+Receipts include terminal root text and aggregate lineage usage when settled. The controller retains ownership until a matching Stop receipt reports settlement; a failed transport is not proof of cancellation. Ordinary Sessions remain independent. Standalone execution cannot resume the reserved external Session namespace.
+
+The focused native hosted job runs the lifecycle, readiness, restart, and authenticated API tests once with retries disabled and checks generated-client drift. Its retained reports bind the source, actual runtime, and provider artifact lifetime. `checks.x86_64-linux.managed-execution` separately verifies Nix packaging; a cached check output is not fresh execution evidence. These fixture gates do not establish live-provider or deployment acceptance.
+
+Managed recovery requires a consistent backup of the complete backend database and its associated files. Projected transcript export/import omits ownership reservations, Stop tombstones, pending inbox items, execution claims, background-job recovery records, and durable backend identity. It cannot restore managed execution. Preserve the controller's encrypted original request separately, and stop the source backend before activating a restored copy. Two copies with the same durable identity must never execute concurrently.
+
+The SQLite recovery fixture creates a real `VACUUM INTO` backup and opens it through a fresh backend graph. It verifies durable identity, original-byte ownership, pending root and child inputs, claims, background-job markers, unrelated personal work, and Stop-before-admit. A second backup verifies that a settled Stop survives another restoration and cannot admit or resume work. This covers database recovery; associated files, credentials, and live-provider effects still require deployment-level restoration proof.
+
 ## One Step May Have Several Physical Attempts
 
 Before each Step, the runner reloads Session History, resolves the selected agent and model, prepares instructions, and materializes tools. Most Steps make one Physical Attempt. Generic retry, continuation-state rejection, incomplete-stream continuation, or overflow-triggered compaction may make another attempt without promoting input again.

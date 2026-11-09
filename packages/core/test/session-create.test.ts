@@ -14,6 +14,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Hash } from "@opencode/util/hash"
 import { Bus } from "@opencode/core/bus"
+import { Job } from "@opencode/core/job"
 import { EventTable } from "@opencode/core/event/sql"
 import { Instructions } from "@opencode/core/instructions/index"
 import { Location } from "@opencode/core/location"
@@ -32,6 +33,9 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { SessionTransfer } from "@opencode/core/session/transfer"
+import { SessionEnvironment } from "@opencode/core/session/environment"
+import { SessionExternal } from "@opencode/core/session/external"
+import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { Workspace } from "@opencode/core/workspace"
 import { Expected } from "./lib/session-message"
 import { testEffect } from "./lib/effect"
@@ -53,6 +57,7 @@ const it = testEffect(
       Session.node,
       SessionTransfer.node,
       InstructionEntry.node,
+      SessionEnvironment.node,
     ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
@@ -64,7 +69,18 @@ const it = testEffect(
 )
 const liveIt = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, Project.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      Project.node,
+      SessionProjector.node,
+      SessionStore.node,
+      Session.node,
+      SessionEnvironment.node,
+      SessionExecution.node,
+      Job.node,
+      SessionRestart.node,
+    ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       SessionExecution.node.replace(SessionExecution.noopLayer),
@@ -105,6 +121,28 @@ function withTmp<A, E, R>(f: (directory: string) => Effect.Effect<A, E, R>) {
 }
 
 describe("Session.create", () => {
+  it.effect("persists required environment admission and inherits it through children and forks", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const environments = yield* SessionEnvironment.Service
+      const root = yield* sessions.create({ location, environmentRequired: true })
+      expect(root.environmentRequired).toBe(true)
+      const child = yield* sessions.create({ parentID: root.id })
+      expect((yield* sessions.get(child.id)).environmentRequired).toBe(true)
+      expect(yield* environments.ready(child.id)).toBe(false)
+      yield* sessions.environment({ sessionID: root.id, variables: { PAPERCLIP_RUN_ID: "owned" } })
+      expect(yield* environments.ready(child.id)).toBe(true)
+      expect(yield* environments.get(child.id)).toEqual({ PAPERCLIP_RUN_ID: "owned" })
+      yield* sessions.prompt({ sessionID: root.id, text: "Settled history", resume: false })
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      yield* SessionInbox.promote(database.db, bus, root.id, "steer")
+      expect((yield* sessions.fork({ sessionID: root.id })).environmentRequired).toBe(true)
+      yield* environments.clear(root.id)
+      yield* environments.set(child.id, { PAPERCLIP_RUN_ID: "stale-child-context" })
+      expect(yield* environments.ready(child.id)).toBe(false)
+    }),
+  )
   liveIt.live("preserves the project canonical directory when creating a session in another clone", () =>
     withTmp((directory) =>
       Effect.gen(function* () {
@@ -852,9 +890,10 @@ describe("Session.create", () => {
       const session = yield* Session.Service
       const parent = yield* session.create({ location })
 
-      expect(
-        yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "Session.ForkEmptyError", sessionID: parent.id })
+      expect(yield* session.fork({ sessionID: parent.id }).pipe(Effect.flip)).toMatchObject({
+        _tag: "Session.ForkEmptyError",
+        sessionID: parent.id,
+      })
     }),
   )
 
@@ -1163,6 +1202,69 @@ describe("Session.create", () => {
         expect(shell?.time.completed).toBeDefined()
       }),
     ),
+  )
+
+  liveIt.live(
+    "keeps the backend environment for external session shells without leaking it into ordinary ones",
+    () =>
+      withTmp((directory) =>
+        Effect.gen(function* () {
+          expect(process.env.PATH).toBeDefined()
+          const backendPath = process.env.PATH!
+          const session = yield* Session.Service
+          const external = yield* SessionExternal.make
+          const backendID = (yield* external.info).backendID
+          const input = (suffix: string) => ({
+            key: `paperclip:${suffix}`,
+            body: JSON.stringify({
+              version: 1,
+              backendID,
+              owner: "paperclip:company:agent",
+              sessionID: `ses_external_${suffix}`,
+              inputID: `msg_external_${suffix}`,
+              location: { directory },
+              prompt: { text: "Only owned work" },
+              environment: { PAPERCLIP_RUN_ID: suffix },
+            }),
+          })
+
+          // The consumer only sends its own variables; the backend still owns PATH and HOME.
+          const managed = input("shell")
+          const admitted = yield* external.admit(managed)
+          yield* external.resume({ ...managed, backendGeneration: admitted.backendGeneration })
+          const managedID = Session.ID.make(admitted.sessionID)
+          yield* session.shell({
+            sessionID: managedID,
+            command:
+              process.platform === "win32"
+                ? "[Console]::Out.Write($env:PATH + '|' + $env:PAPERCLIP_RUN_ID)"
+                : 'printf \'%s|%s\' "$PATH" "$PAPERCLIP_RUN_ID"',
+          })
+          const managedShell = (yield* session.messages({ sessionID: managedID, order: "asc" })).find(
+            (message): message is SessionMessage.Shell => message.type === "shell",
+          )
+          expect(managedShell?.output?.output).toContain(`${backendPath}|shell`)
+
+          // An ordinary scoped environment remains a replacement snapshot.
+          const ordinary = yield* session.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(directory) }),
+          })
+          yield* session.environment({ sessionID: ordinary.id, variables: { OPENCODE_SESSION_ENV_TEST: "scoped" } })
+          yield* session.shell({
+            sessionID: ordinary.id,
+            command:
+              process.platform === "win32"
+                ? "[Console]::Out.Write($env:PATH + '|' + $env:OPENCODE_SESSION_ENV_TEST)"
+                : 'printf \'%s|%s\' "${PATH-unset}" "$OPENCODE_SESSION_ENV_TEST"',
+          })
+          const ordinaryShell = (yield* session.messages({ sessionID: ordinary.id, order: "asc" })).find(
+            (message): message is SessionMessage.Shell => message.type === "shell",
+          )
+          expect(ordinaryShell?.output?.output).toContain("|scoped")
+          expect(ordinaryShell?.output?.output).not.toContain(backendPath)
+        }),
+      ),
+    { timeout: 30_000 },
   )
 
   it.effect("switches the selected agent through the durable Session event", () =>
