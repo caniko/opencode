@@ -13,8 +13,9 @@ export function pretty(diagnostic: LSPClient.Diagnostic) {
   const severity = severityMap[diagnostic.severity || 1]
   const line = diagnostic.range.start.line + 1
   const col = diagnostic.range.start.character + 1
+  const { code } = diagnostic
 
-  return `${severity} [${line}:${col}] ${diagnostic.message}`
+  return `${severity} [${line}:${col}]${code != null && code !== "" ? ` [${code}]` : ""} ${diagnostic.message}`
 }
 
 export function report(file: string, issues: LSPClient.Diagnostic[]) {
