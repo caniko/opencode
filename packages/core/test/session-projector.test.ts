@@ -50,9 +50,9 @@ describe("SessionProjector", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const live = Project.ID.make("b4de3c04570de574aadc36231f0faabbd541f350")
-      const stale = Project.ID.make("ca5e0ee17526afe3c1b26616149d3f2346887862")
-      const directory = "/data/nvme0/can/canix"
+      const live = Project.ID.make("project-live")
+      const stale = Project.ID.make("project-stale")
+      const directory = "/repo/opencode"
       yield* db
         .insert(ProjectTable)
         .values({ id: live, worktree: AbsolutePath.make(directory), sandboxes: [] })
