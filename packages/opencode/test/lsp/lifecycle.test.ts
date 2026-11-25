@@ -141,6 +141,22 @@ describe("LSP.Diagnostic", () => {
     expect(result).toBe("ERROR [10:5] Type 'string' is not assignable to type 'number'")
   })
 
+  test.each([
+    ["E0382", "ERROR [12:5] [E0382] borrow of moved value"],
+    ["clippy::unwrap_used", "ERROR [12:5] [clippy::unwrap_used] borrow of moved value"],
+    [2322, "ERROR [12:5] [2322] borrow of moved value"],
+    [0, "ERROR [12:5] [0] borrow of moved value"],
+    ["", "ERROR [12:5] borrow of moved value"],
+  ] as const)("pretty() formats diagnostic code %j", (code, expected) => {
+    const result = LSP.Diagnostic.pretty({
+      range: { start: { line: 11, character: 4 }, end: { line: 11, character: 10 } },
+      message: "borrow of moved value",
+      severity: 1,
+      code,
+    })
+    expect(result).toBe(expected)
+  })
+
   test("pretty() formats warning diagnostic", () => {
     const result = LSP.Diagnostic.pretty({
       range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
